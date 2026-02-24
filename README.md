@@ -79,4 +79,6 @@ No external network access is required.
 - Multi-face support
 
 ## License
-Choose a license (MIT recommended for open-source tools).
+
+This project is licensed under the MIT License.  
+See the LICENSE file for details.
