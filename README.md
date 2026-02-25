@@ -10,7 +10,7 @@ Head-Tracked View Assist is a Blender add-on that enables hands-free viewport na
 ![Head-Tracked View Assist Demo](assets/viewassistgif.gif)
 
 ### Screenshot
-![Head-Tracked View Assist Screenshot](assets/screenshot.png)
+![Head-Tracked View Assist Screenshot](assets/buttons.png)
 
 It combines:
 - a Blender add-on (UI + viewport control), and
