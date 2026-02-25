@@ -1,5 +1,7 @@
 import bpy
 
+from .operators import _is_tracker_running
+
 
 class HTVA_PT_panel(bpy.types.Panel):
     bl_label = "Head-Tracked View Assist"
@@ -18,14 +20,30 @@ class HTVA_PT_panel(bpy.types.Panel):
         box = layout.box()
         box.label(text="Tracker", icon="CAMERA_DATA")
 
-        row = box.row(align=True)
-        row.operator("htva.launch_tracker", text="Launch Tracker", icon="PLAY")
+        running = _is_tracker_running()
+
+        col = box.column(align=True)
+
+        # Launch row (disabled if running)
+        row = col.row(align=True)
+        row.enabled = not running
+        row.operator("htva.launch_tracker", text="Launch (Preview)", icon="PLAY")
+        row.operator("htva.launch_tracker_bg", text="Launch (Background)", icon="PLAY")
+
+        # Stop row (enabled only if running)
+        row = col.row(align=True)
+        row.enabled = running
         row.operator("htva.stop_tracker", text="Stop Tracker", icon="CANCEL")
+
+        status_text = "RUNNING" if running else "STOPPED"
+        status_icon = "CHECKMARK" if running else "CANCEL"
+        box.label(text=f"Tracker Status: {status_text}", icon=status_icon)
 
         # ===============================
         # STATUS / PRIMARY CONTROLS
         # ===============================
         box = layout.box()
+        box.label(text="Viewport Assist", icon="CAMERA_DATA")
 
         row = box.row(align=True)
         icon = "PLAY" if not props.enabled else "PAUSE"

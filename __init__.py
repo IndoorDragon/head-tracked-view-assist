@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Head-Tracked View Assist",
     "author": "IndoorDragon (indoordragon.com | github.com/indoordragon)",
-    "version": (0, 1, 0),
+    "version": (0, 1, 1),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > View Assist",
     "description": "Webcam head-tracking driven viewport assist via UDP (bundled tracker executable).",
@@ -20,6 +20,7 @@ from .operators import (
     HTVA_OT_stop,
     HTVA_OT_toggle,
     HTVA_OT_launch_tracker,
+    HTVA_OT_launch_tracker_bg,
     HTVA_OT_stop_tracker,
 )
 from .ui import HTVA_PT_panel
@@ -110,6 +111,7 @@ def unregister_keymaps():
 classes = (
     HTVA_Props,
     HTVA_OT_launch_tracker,
+    HTVA_OT_launch_tracker_bg,
     HTVA_OT_stop_tracker,
     HTVA_OT_use_this_viewport,
     HTVA_OT_start,

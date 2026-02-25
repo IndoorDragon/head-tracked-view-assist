@@ -19,7 +19,8 @@ from .utils import (
 # TRACKER LAUNCH / STOP
 # =========================================================
 
-HTVA_CTRL_PORT = 5006  # control port for QUIT message
+HTVA_CTRL_PORT = 5006  # control port for QUIT message (tracker binds this)
+HTVA_POSE_PORT = 5005  # pose data port (tracker -> blender; Blender binds when Status ON)
 
 
 def _tracker_dir() -> Path:
@@ -27,12 +28,10 @@ def _tracker_dir() -> Path:
 
 
 def _tracker_exe_path() -> Path:
-    # Packaged tracker executable (PyInstaller output)
     return _tracker_dir() / "tracker.exe"
 
 
 def _tracker_internal_dir() -> Path:
-    # PyInstaller one-folder internal runtime dir (must sit next to tracker.exe)
     return _tracker_dir() / "_internal"
 
 
@@ -65,70 +64,127 @@ def _send_tracker_quit():
         pass
 
 
-class HTVA_OT_launch_tracker(bpy.types.Operator):
-    bl_idname = "htva.launch_tracker"
-    bl_label = "Launch Tracker"
-    bl_description = "Launch the external webcam tracker (Windows only)"
-    bl_options = {'REGISTER'}
+def _port_in_use_udp(port: int) -> bool:
+    """
+    True if something is already bound to 127.0.0.1:port (UDP).
+    We use this to detect an already-running tracker (prevents WinError 10048).
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.bind(("127.0.0.1", port))
+        return False
+    except OSError:
+        return True
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
 
-    def execute(self, context):
-        if not _is_windows():
-            self.report({'ERROR'}, "Tracker launcher currently supports Windows only.")
-            return {'CANCELLED'}
 
-        tracker_dir = _tracker_dir()
-        exe = _tracker_exe_path()
-        internal_dir = _tracker_internal_dir()
+def _is_tracker_running() -> bool:
+    """
+    IMPORTANT:
+    Blender itself binds the POSE port (5005) when Status is ON.
+    So we must NOT use 5005 to detect whether tracker.exe is running.
 
-        if not tracker_dir.exists():
-            self.report({'ERROR'}, f"Tracker folder not found:\n{tracker_dir}")
-            return {'CANCELLED'}
+    tracker.exe should be the one binding the CONTROL port (5006).
+    """
+    return _port_in_use_udp(HTVA_CTRL_PORT)
 
-        if not exe.exists():
-            self.report(
+
+def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
+    """
+    Shared launcher.
+    show_preview=True  -> windowed preview
+    show_preview=False -> background (no preview)
+    Returns True if launched successfully, False otherwise.
+    """
+    if not _is_windows():
+        if report_fn:
+            report_fn({'ERROR'}, "Tracker launcher currently supports Windows only.")
+        return False
+
+    if _is_tracker_running():
+        if report_fn:
+            report_fn({'INFO'}, "Tracker is already running.")
+        return False
+
+    tracker_dir = _tracker_dir()
+    exe = _tracker_exe_path()
+    internal_dir = _tracker_internal_dir()
+
+    if not tracker_dir.exists():
+        if report_fn:
+            report_fn({'ERROR'}, f"Tracker folder not found:\n{tracker_dir}")
+        return False
+
+    if not exe.exists():
+        if report_fn:
+            report_fn(
                 {'ERROR'},
                 "tracker.exe not found:\n"
                 f"{exe}\n\n"
                 "Make sure you copied the PyInstaller dist output into the add-on's tracker/ folder."
             )
-            return {'CANCELLED'}
+        return False
 
-        # In one-folder mode, PyInstaller needs _internal next to the exe.
-        if not internal_dir.exists():
-            self.report(
+    if not internal_dir.exists():
+        if report_fn:
+            report_fn(
                 {'ERROR'},
                 "_internal folder not found:\n"
                 f"{internal_dir}\n\n"
                 "This folder must be copied alongside tracker.exe (PyInstaller one-folder output)."
             )
-            return {'CANCELLED'}
+        return False
 
-        try:
-            # Optional: set defaults for tracker behavior when launched from Blender
-            env = dict(**{k: v for k, v in dict(os.environ).items()})
-            env["HTVA_UDP_IP"] = env.get("HTVA_UDP_IP", "127.0.0.1")
-            env["HTVA_UDP_PORT"] = env.get("HTVA_UDP_PORT", "5005")
-            env["HTVA_CTRL_PORT"] = env.get("HTVA_CTRL_PORT", str(HTVA_CTRL_PORT))
+    try:
+        env = dict(**{k: v for k, v in dict(os.environ).items()})
+        env["HTVA_UDP_IP"] = env.get("HTVA_UDP_IP", "127.0.0.1")
+        env["HTVA_UDP_PORT"] = env.get("HTVA_UDP_PORT", str(HTVA_POSE_PORT))
+        env["HTVA_CTRL_PORT"] = env.get("HTVA_CTRL_PORT", str(HTVA_CTRL_PORT))
 
-            # If you want it silent when launched from Blender, keep preview off:
-            # (User can still run tracker.exe manually if they want the preview.)
-            env["HTVA_SHOW_PREVIEW"] = "1"
+        # 1 = windowed preview, 0 = background
+        env["HTVA_SHOW_PREVIEW"] = "1" if show_preview else "0"
 
-            # Launch the tracker executable
-            subprocess.Popen(
-                [str(exe)],
-                cwd=str(tracker_dir),
-                env=env,
-                # Windows nicety: avoid creating an extra console window in some cases
-                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-            )
+        subprocess.Popen(
+            [str(exe)],
+            cwd=str(tracker_dir),
+            env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+        )
 
-            self.report({'INFO'}, "Launching tracker…")
-            return {'FINISHED'}
+        if report_fn:
+            report_fn({'INFO'}, "Launching tracker…")
+        return True
 
-        except Exception as e:
-            self.report({'ERROR'}, f"Failed to launch tracker: {e}")
-            return {'CANCELLED'}
+    except Exception as e:
+        if report_fn:
+            report_fn({'ERROR'}, f"Failed to launch tracker: {e}")
+        return False
+
+
+class HTVA_OT_launch_tracker(bpy.types.Operator):
+    bl_idname = "htva.launch_tracker"
+    bl_label = "Launch Tracker (Preview)"
+    bl_description = "Launch the external webcam tracker (with preview window)"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        ok = _launch_tracker(show_preview=True, report_fn=self.report)
+        return {'FINISHED'} if ok else {'CANCELLED'}
+
+
+class HTVA_OT_launch_tracker_bg(bpy.types.Operator):
+    bl_idname = "htva.launch_tracker_bg"
+    bl_label = "Launch Tracker (Background)"
+    bl_description = "Launch the external webcam tracker in the background (no preview window)"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context):
+        ok = _launch_tracker(show_preview=False, report_fn=self.report)
+        return {'FINISHED'} if ok else {'CANCELLED'}
 
 
 class HTVA_OT_stop_tracker(bpy.types.Operator):
@@ -150,7 +206,7 @@ class HTVA_OT_stop_tracker(bpy.types.Operator):
 
         # 2) If it’s still running, fallback to taskkill (safety net)
         pid = _read_tracker_pid()
-        if pid > 0:
+        if pid > 0 and _is_tracker_running():
             try:
                 subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -163,7 +219,6 @@ class HTVA_OT_stop_tracker(bpy.types.Operator):
                 self.report({'WARNING'}, f"Sent QUIT, but fallback kill failed: {e}")
                 return {'FINISHED'}
 
-        # If no PID file, we still sent QUIT. That’s usually enough.
         self.report({'INFO'}, "Sent quit signal to tracker.")
         return {'FINISHED'}
 
@@ -295,7 +350,7 @@ class HTVA_OT_start(bpy.types.Operator):
 
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._sock.setblocking(False)
-        self._sock.bind(("127.0.0.1", 5005))  # pose port
+        self._sock.bind(("127.0.0.1", HTVA_POSE_PORT))
 
         wm = context.window_manager
         self._timer = wm.event_timer_add(0.02, window=context.window)
