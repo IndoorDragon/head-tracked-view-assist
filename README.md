@@ -17,12 +17,14 @@ It combines:
 - a bundled tracker executable (OpenCV + MediaPipe) that sends motion data to Blender over localhost UDP.
 
 ## Features
-- Real-time head tracking using a webcam
-- Smooth viewport yaw/pitch + zoom
-- Adjustable sensitivity and smoothing
-- Multi-viewport support
-- One-click tracker launch from Blender
-- No external Python installation required (Windows build)
+- Real-time head tracking using a webcam  
+- Smooth viewport yaw/pitch + zoom  
+- Adjustable sensitivity and smoothing  
+- Multi-viewport support  
+- One-click tracker launch from Blender  
+- Launch tracker with preview window or run silently in the background  
+- Prevents multiple tracker instances from running simultaneously  
+- No external Python installation required  
 
 ## Requirements
 - Blender 4.x (Windows)
@@ -41,6 +43,22 @@ It combines:
 2. Click **Start** to enable head-tracked view assist.
 3. Move your head to control the viewport.
 4. Use **Stop Tracker** to close the tracker gracefully.
+
+## Tracker Launch Modes
+
+The tracker can be launched in two ways:
+
+**Preview Mode**
+- Opens a window showing the webcam feed
+- Useful for setup and calibration
+- Allows visual confirmation that tracking is working
+
+**Background Mode**
+- Runs silently without any visible window
+- Ideal for normal use while working in Blender
+- Reduces screen clutter and system distraction
+
+Only one tracker instance can run at a time.
 
 ### Controls
 | Motion | Effect |
