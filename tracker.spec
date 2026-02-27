@@ -17,11 +17,11 @@ datas += mp.datas + cv2.datas + np.datas
 binaries += mp.binaries + cv2.binaries + np.binaries
 hiddenimports += mp.hiddenimports + cv2.hiddenimports + np.hiddenimports
 
-# Bundle the model file next to the executable
-datas += [("face_landmarker.task", ".")]
+# Bundle the model file next to the executable (NOTE: it's inside tracker/)
+datas += [("tracker/face_landmarker.task", ".")]
 
 a = Analysis(
-    ["webcam_sender.py"],
+    ["tracker/webcam_sender.py"],  # NOTE: script is inside tracker/
     pathex=[],
     binaries=binaries,
     datas=datas,

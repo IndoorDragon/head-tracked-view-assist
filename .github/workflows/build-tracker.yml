@@ -33,7 +33,7 @@ jobs:
 
       - name: Build with PyInstaller (spec)
         run: |
-          pyinstaller --noconfirm --clean tracker.spec
+          python -m PyInstaller --noconfirm --clean tracker.spec
 
       # Package per-OS into a single archive so it's easy to attach to the release
       - name: Create archive (Windows)
