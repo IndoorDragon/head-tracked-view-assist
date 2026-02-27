@@ -21,21 +21,38 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.12
+      # ✅ Use Python 3.11 (most compatible with MediaPipe)
+      - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
 
+      # ✅ DEBUG: Confirm files exist on runner
+      - name: Debug — show repo files
+        run: |
+          python --version
+          ls -la
+          ls -la tracker
+
+      # ✅ Install dependencies safely
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install -r requirements.txt
 
+      # ✅ DEBUG: Show installed packages
+      - name: Debug — show installed packages
+        run: |
+          python -m pip --version
+          python -m pip freeze | sort
+
+      # ✅ Build using spec
       - name: Build with PyInstaller (spec)
         run: |
           python -m PyInstaller --noconfirm --clean tracker.spec
 
-      # Package per-OS into a single archive so it's easy to attach to the release
+      # ---------------- Packaging ----------------
+
       - name: Create archive (Windows)
         if: runner.os == 'Windows'
         run: |
@@ -47,7 +64,8 @@ jobs:
           cd dist
           tar -czf ../tracker-${{ runner.os }}.tar.gz tracker
 
-      # Upload archives to the GitHub Release that triggered this workflow
+      # ---------------- Upload to Release ----------------
+
       - name: Upload release assets (Windows)
         if: runner.os == 'Windows'
         uses: softprops/action-gh-release@v2
