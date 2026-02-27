@@ -1,3 +1,4 @@
+# operators.py
 import bpy
 import math
 import mathutils
@@ -6,6 +7,8 @@ import platform
 import subprocess
 import time
 import os
+import csv
+import io
 from pathlib import Path
 
 from .utils import (
@@ -41,6 +44,22 @@ def _is_windows() -> bool:
 
 def _pid_file() -> Path:
     return _tracker_dir() / "tracker_pid.txt"
+
+
+def _write_tracker_pid(pid: int) -> None:
+    try:
+        _pid_file().write_text(str(int(pid)), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _clear_tracker_pid() -> None:
+    try:
+        p = _pid_file()
+        if p.exists():
+            p.unlink()
+    except Exception:
+        pass
 
 
 def _read_tracker_pid() -> int:
@@ -91,6 +110,87 @@ def _is_tracker_running() -> bool:
     tracker.exe should be the one binding the CONTROL port (5006).
     """
     return _port_in_use_udp(HTVA_CTRL_PORT)
+
+
+def _process_name_for_pid_windows(pid: int) -> str:
+    """
+    Return the image name for a PID using tasklist (Windows).
+    Returns "" if unknown.
+    """
+    try:
+        r = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+        )
+        out = (r.stdout or "").strip()
+        if not out or "No tasks are running" in out:
+            return ""
+
+        reader = csv.reader(io.StringIO(out))
+        row = next(reader, None)
+        if not row or len(row) < 2:
+            return ""
+        return row[0].strip().strip('"')
+    except Exception:
+        return ""
+
+
+def _force_kill_pid_if_tracker(pid: int) -> bool:
+    """
+    Kill only if PID is actually tracker.exe (avoid stale PID accidents).
+    Returns True if we attempted to kill.
+    """
+    if pid <= 0:
+        return False
+
+    name = _process_name_for_pid_windows(pid).lower()
+    if name != "tracker.exe":
+        return False
+
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def htva_stop_tracker_on_exit():
+    """
+    Called during Blender shutdown via atexit (registered in __init__.py).
+    Keep this VERY defensive: Blender data may already be partially freed.
+    Do NOT use bpy.context here.
+    """
+    try:
+        if not _is_windows():
+            return
+
+        if not _is_tracker_running():
+            _clear_tracker_pid()
+            return
+
+        # 1) graceful quit
+        _send_tracker_quit()
+
+        # 2) short grace period
+        try:
+            time.sleep(0.2)
+        except Exception:
+            pass
+
+        # 3) force kill only if PID still matches tracker.exe
+        pid = _read_tracker_pid()
+        if pid > 0 and _is_tracker_running():
+            _force_kill_pid_if_tracker(pid)
+
+        _clear_tracker_pid()
+    except Exception:
+        # Never raise during interpreter shutdown
+        pass
 
 
 def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
@@ -148,12 +248,15 @@ def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
         # 1 = windowed preview, 0 = background
         env["HTVA_SHOW_PREVIEW"] = "1" if show_preview else "0"
 
-        subprocess.Popen(
+        proc = subprocess.Popen(
             [str(exe)],
             cwd=str(tracker_dir),
             env=env,
             creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
         )
+
+        # NEW: persist PID for safe fallback kill
+        _write_tracker_pid(proc.pid)
 
         if report_fn:
             report_fn({'INFO'}, "Launching tracker…")
@@ -204,21 +307,19 @@ class HTVA_OT_stop_tracker(bpy.types.Operator):
         # Give it a moment to exit cleanly
         time.sleep(0.2)
 
-        # 2) If it’s still running, fallback to taskkill (safety net)
+        # 2) If it’s still running, fallback kill (ONLY if PID is tracker.exe)
         pid = _read_tracker_pid()
         if pid > 0 and _is_tracker_running():
-            try:
-                subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/T", "/F"],
-                    capture_output=True,
-                    text=True,
-                )
+            killed = _force_kill_pid_if_tracker(pid)
+            if killed:
+                _clear_tracker_pid()
                 self.report({'INFO'}, "Tracker stopped.")
                 return {'FINISHED'}
-            except Exception as e:
-                self.report({'WARNING'}, f"Sent QUIT, but fallback kill failed: {e}")
+            else:
+                self.report({'WARNING'}, "Sent QUIT, but PID did not match tracker.exe (not killing).")
                 return {'FINISHED'}
 
+        _clear_tracker_pid()
         self.report({'INFO'}, "Sent quit signal to tracker.")
         return {'FINISHED'}
 

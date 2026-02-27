@@ -1,3 +1,4 @@
+# __init__.py
 bl_info = {
     "name": "Head-Tracked View Assist",
     "author": "IndoorDragon (indoordragon.com | github.com/indoordragon)",
@@ -10,6 +11,7 @@ bl_info = {
     "category": "3D View",
 }
 
+import atexit
 import bpy
 from bpy.app.handlers import persistent
 
@@ -22,6 +24,7 @@ from .operators import (
     HTVA_OT_launch_tracker,
     HTVA_OT_launch_tracker_bg,
     HTVA_OT_stop_tracker,
+    htva_stop_tracker_on_exit,  # NEW: exit cleanup
 )
 from .ui import HTVA_PT_panel
 from .prefs import (
@@ -31,6 +34,7 @@ from .prefs import (
 )
 
 _addon_keymaps = []
+_atexit_registered = False
 
 
 def _get_prefs_safe():
@@ -137,6 +141,8 @@ classes = (
 
 
 def register():
+    global _atexit_registered
+
     for c in classes:
         bpy.utils.register_class(c)
 
@@ -147,12 +153,37 @@ def register():
     if _htva_apply_defaults_on_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_htva_apply_defaults_on_load)
 
+    # NEW: Ensure tracker stops when Blender exits.
+    # We guard so it doesn't get registered multiple times during reload/dev.
+    if not _atexit_registered:
+        try:
+            atexit.register(htva_stop_tracker_on_exit)
+            _atexit_registered = True
+        except Exception:
+            pass
+
 
 def unregister():
+    global _atexit_registered
+
     unregister_keymaps()
 
     if _htva_apply_defaults_on_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_htva_apply_defaults_on_load)
+
+    # NEW: If user disables/uninstalls the add-on, stop the tracker immediately too.
+    try:
+        htva_stop_tracker_on_exit()
+    except Exception:
+        pass
+
+    # NEW: Unregister exit hook (helps during add-on reloads in development).
+    if _atexit_registered:
+        try:
+            atexit.unregister(htva_stop_tracker_on_exit)
+        except Exception:
+            pass
+        _atexit_registered = False
 
     del bpy.types.Scene.htva_props
 
