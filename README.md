@@ -100,11 +100,17 @@ No external network access is required.
 - Ensure face is visible to camera
 - Verify the correct camera is selected
 
-## Roadmap (ideas)
-- Cross-platform builds (macOS/Linux)
-- Custom calibration profiles
-- Gesture controls
-- Multi-face support
+**Preview window shows wrong camera or black screen**
+- Your system may have multiple camera devices (built-in webcam, USB webcam, virtual cameras, etc.)
+- The tracker may open a different device than expected
+- In the Preview window, press:
+
+  - **N** → Next camera device  
+  - **P** → Previous camera device  
+
+- Cycle until the correct webcam feed appears
+- The selected camera is saved for future launches
+
 
 ## License
 
