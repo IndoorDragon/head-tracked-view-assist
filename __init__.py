@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Head-Tracked View Assist",
     "author": "IndoorDragon (indoordragon.com | github.com/indoordragon)",
-    "version": (0, 1, 1),
+    "version": (0, 1, 2),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > View Assist",
     "description": "Webcam head-tracking driven viewport assist via UDP (bundled tracker executable).",
@@ -95,7 +95,19 @@ def register_keymaps():
         return
 
     km = kc.keymaps.new(name="3D View", space_type='VIEW_3D')
+
+    # Toggle View Assist (existing)
     kmi = km.keymap_items.new("htva.toggle", type='Q', value='PRESS', alt=True, shift=True)
+    _addon_keymaps.append((km, kmi))
+
+    # Launch Tracker (Background) (new)
+    # Default: Alt+Shift+W
+    kmi = km.keymap_items.new("htva.launch_tracker_bg", type='W', value='PRESS', alt=True, shift=True)
+    _addon_keymaps.append((km, kmi))
+
+    # Stop Tracker (new)
+    # Default: Alt+Shift+S
+    kmi = km.keymap_items.new("htva.stop_tracker", type='S', value='PRESS', alt=True, shift=True)
     _addon_keymaps.append((km, kmi))
 
 

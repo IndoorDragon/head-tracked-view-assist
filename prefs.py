@@ -85,26 +85,37 @@ class HTVA_AddonPreferences(bpy.types.AddonPreferences):
         row.operator("htva.save_scene_as_defaults", icon="EXPORT")
 
         layout.separator()
-        layout.label(text="Hotkey (editable):")
+        layout.label(text="Hotkeys (editable):")
 
         try:
             import rna_keymap_ui
             wm = context.window_manager
+
+            # Use USER keyconfig so changes persist
             kc = wm.keyconfigs.user
             km = kc.keymaps.get("3D View")
             if not km:
                 layout.label(text="Keymap '3D View' not found.")
                 return
 
-            kmi = None
-            for item in km.keymap_items:
-                if item.idname == "htva.toggle":
-                    kmi = item
-                    break
+            def draw_hotkey(op_idname: str, label: str):
+                kmi = None
+                for item in km.keymap_items:
+                    if item.idname == op_idname:
+                        kmi = item
+                        break
 
-            if kmi:
-                rna_keymap_ui.draw_kmi([], kc, km, kmi, layout, 0)
-            else:
-                layout.label(text="Hotkey not registered yet. Enable add-on and reopen Preferences.")
+                layout.label(text=label)
+                if kmi:
+                    rna_keymap_ui.draw_kmi([], kc, km, kmi, layout, 0)
+                else:
+                    layout.label(text=f"Hotkey for '{op_idname}' not registered yet. Re-enable add-on and reopen Preferences.")
+
+                layout.separator(factor=0.5)
+
+            draw_hotkey("htva.toggle", "Toggle View Assist")
+            draw_hotkey("htva.launch_tracker_bg", "Launch Tracker (Background)")
+            draw_hotkey("htva.stop_tracker", "Stop Tracker")
+
         except Exception:
             layout.label(text="Hotkey UI unavailable.")

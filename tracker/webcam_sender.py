@@ -31,13 +31,13 @@ sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 
 # ----------------------------
-# Paths (Option A: bundle model with the app)
+# Paths
 # ----------------------------
 HERE = get_app_dir()
 CONFIG_PATH = HERE / "config.json"
 PID_PATH = HERE / "tracker_pid.txt"
 
-# Option A model lookup order:
+# Model lookup order:
 # 1) explicit env override
 # 2) alongside tracker.exe
 # 3) PyInstaller one-folder internal dir (dist/tracker/_internal/...)
