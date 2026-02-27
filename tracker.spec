@@ -4,18 +4,18 @@ from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 
-# Collect packages (python + data + binaries) from these libs
-mp = collect_all("mediapipe")
-cv2 = collect_all("cv2")
-np = collect_all("numpy")
+# collect_all() returns a tuple: (datas, binaries, hiddenimports)
+mp_datas, mp_binaries, mp_hiddenimports = collect_all("mediapipe")
+cv2_datas, cv2_binaries, cv2_hiddenimports = collect_all("cv2")
+np_datas, np_binaries, np_hiddenimports = collect_all("numpy")
 
 datas = []
 binaries = []
 hiddenimports = []
 
-datas += mp.datas + cv2.datas + np.datas
-binaries += mp.binaries + cv2.binaries + np.binaries
-hiddenimports += mp.hiddenimports + cv2.hiddenimports + np.hiddenimports
+datas += mp_datas + cv2_datas + np_datas
+binaries += mp_binaries + cv2_binaries + np_binaries
+hiddenimports += mp_hiddenimports + cv2_hiddenimports + np_hiddenimports
 
 # Bundle the model file next to the executable (NOTE: it's inside tracker/)
 datas += [("tracker/face_landmarker.task", ".")]
@@ -38,7 +38,6 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-# console=False prevents a terminal window on Windows/macOS
 exe = EXE(
     pyz,
     a.scripts,
