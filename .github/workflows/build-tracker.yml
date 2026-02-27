@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # required to upload assets to the release
+  contents: write
 
 jobs:
   build:
@@ -21,37 +21,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ✅ Use Python 3.11 (most compatible with MediaPipe)
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # ✅ DEBUG: Confirm files exist on runner
-      - name: Debug — show repo files
+      # ✅ Cross-platform debug (works on Windows/macOS/Linux)
+      - name: Debug — show repo files (cross-platform)
         run: |
-          python --version
-          ls -la
-          ls -la tracker
+          python -c "import sys, os; print('Python:', sys.version); print('CWD:', os.getcwd()); print('Root:', os.listdir('.')); print('tracker exists:', os.path.isdir('tracker')); print('tracker/:', os.listdir('tracker') if os.path.isdir('tracker') else 'MISSING')"
 
-      # ✅ Install dependencies safely
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      # ✅ DEBUG: Show installed packages
       - name: Debug — show installed packages
         run: |
           python -m pip --version
-          python -m pip freeze | sort
+          python -m pip freeze
 
-      # ✅ Build using spec
       - name: Build with PyInstaller (spec)
         run: |
           python -m PyInstaller --noconfirm --clean tracker.spec
-
-      # ---------------- Packaging ----------------
 
       - name: Create archive (Windows)
         if: runner.os == 'Windows'
@@ -63,8 +55,6 @@ jobs:
         run: |
           cd dist
           tar -czf ../tracker-${{ runner.os }}.tar.gz tracker
-
-      # ---------------- Upload to Release ----------------
 
       - name: Upload release assets (Windows)
         if: runner.os == 'Windows'
