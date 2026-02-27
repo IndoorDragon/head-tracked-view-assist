@@ -26,7 +26,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      # ✅ Cross-platform debug (works on Windows/macOS/Linux)
       - name: Debug — show repo files (cross-platform)
         run: |
           python -c "import sys, os; print('Python:', sys.version); print('CWD:', os.getcwd()); print('Root:', os.listdir('.')); print('tracker exists:', os.path.isdir('tracker')); print('tracker/:', os.listdir('tracker') if os.path.isdir('tracker') else 'MISSING')"
@@ -45,6 +44,8 @@ jobs:
         run: |
           python -m PyInstaller --noconfirm --clean tracker.spec
 
+      # ---------------- Packaging ----------------
+
       - name: Create archive (Windows)
         if: runner.os == 'Windows'
         run: |
@@ -56,14 +57,33 @@ jobs:
           cd dist
           tar -czf ../tracker-${{ runner.os }}.tar.gz tracker
 
-      - name: Upload release assets (Windows)
+      # ---------------- Always upload as workflow artifacts ----------------
+      # This works for BOTH manual runs and release runs.
+
+      - name: Upload artifact (Windows)
         if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracker-windows
+          path: tracker-windows.zip
+
+      - name: Upload artifact (macOS/Linux)
+        if: runner.os != 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tracker-${{ runner.os }}
+          path: tracker-${{ runner.os }}.tar.gz
+
+      # ---------------- Upload to GitHub Release (ONLY when triggered by a Release tag) ----------------
+
+      - name: Upload release assets (Windows)
+        if: runner.os == 'Windows' && github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: tracker-windows.zip
 
       - name: Upload release assets (macOS/Linux)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: tracker-${{ runner.os }}.tar.gz
