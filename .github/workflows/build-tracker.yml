@@ -20,7 +20,7 @@ jobs:
             asset_arch: x86_64
             python: "3.11"
 
-          # Linux (GitHub hosted is x86_64)
+          # Linux
           - os: ubuntu-latest
             asset_os: Linux
             asset_arch: x86_64
@@ -49,23 +49,39 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
+      - name: Prepare log folder
+        shell: bash
+        run: |
+          mkdir -p ci_logs
+
       - name: Debug — show platform + arch
         shell: bash
         run: |
-          echo "Runner OS: $RUNNER_OS"
-          uname -a || true
-          uname -m || true
-          python -c "import sys, platform; print('Python:', sys.version); print('platform.system:', platform.system()); print('platform.machine:', platform.machine())"
+          {
+            echo "Runner OS: $RUNNER_OS"
+            echo "Matrix OS: ${{ matrix.os }}"
+            echo "Asset: ${{ matrix.asset_os }}-${{ matrix.asset_arch }}"
+            uname -a || true
+            uname -m || true
+            if command -v sw_vers >/dev/null 2>&1; then sw_vers || true; fi
+            python -c "import sys, platform; print('Python:', sys.version); print('platform.system:', platform.system()); print('platform.machine:', platform.machine())"
+          } | tee ci_logs/system-info.log
 
       - name: Debug — show repo files (cross-platform)
         shell: bash
         run: |
-          python -c "import os; print('CWD:', os.getcwd()); print('Root:', os.listdir('.')); print('tracker exists:', os.path.isdir('tracker')); print('tracker/:', os.listdir('tracker') if os.path.isdir('tracker') else 'MISSING')"
+          python -c "import os; print('CWD:', os.getcwd()); print('Root:', os.listdir('.')); print('tracker exists:', os.path.isdir('tracker')); print('tracker/:', os.listdir('tracker') if os.path.isdir('tracker') else 'MISSING')" \
+            | tee ci_logs/repo-files.log
 
       - name: Upgrade build tooling
         shell: bash
         run: |
-          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install --upgrade pip setuptools wheel | tee ci_logs/pip-upgrade.log
+
+      - name: Pip debug (very helpful on macOS Intel)
+        shell: bash
+        run: |
+          python -m pip debug --verbose | tee ci_logs/pip-debug.log
 
       # ---------------- Dependencies ----------------
 
@@ -73,26 +89,24 @@ jobs:
         if: runner.os != 'macOS' || matrix.asset_arch != 'x86_64'
         shell: bash
         run: |
-          python -m pip install -r requirements.txt
+          python -m pip install -r requirements.txt | tee ci_logs/pip-install.log
 
       - name: Install dependencies (macOS Intel workaround)
         if: runner.os == 'macOS' && matrix.asset_arch == 'x86_64'
         shell: bash
         run: |
-          echo "macOS Intel: installing all requirements EXCEPT mediapipe, then installing mediapipe explicitly."
+          set -e
+          echo "macOS Intel: installing all requirements EXCEPT mediapipe, then installing mediapipe explicitly." | tee ci_logs/pip-install.log
 
-          # Create a temp requirements file excluding any mediapipe lines (mediapipe or mediapipe-silicon, etc.)
           python - << 'PY'
           from pathlib import Path
           src = Path("requirements.txt").read_text(encoding="utf-8").splitlines()
           out = []
           for line in src:
               s = line.strip()
-              # keep comments/blank lines
               if not s or s.startswith("#"):
                   out.append(line)
                   continue
-              # drop mediapipe-related requirement lines
               if s.lower().startswith("mediapipe"):
                   print("Skipping:", line)
                   continue
@@ -100,21 +114,23 @@ jobs:
           Path("requirements.no_mediapipe.txt").write_text("\n".join(out) + "\n", encoding="utf-8")
           PY
 
-          python -m pip install -r requirements.no_mediapipe.txt
+          python -m pip install -r requirements.no_mediapipe.txt 2>&1 | tee -a ci_logs/pip-install.log
 
-          # Install mediapipe explicitly (latest stable on PyPI)
-          python -m pip install "mediapipe==0.10.32"
+          # mediapipe latest (0.10.32 per PyPI release history)
+          python -m pip install "mediapipe==0.10.32" 2>&1 | tee -a ci_logs/pip-install.log
 
       - name: Debug — show installed packages
         shell: bash
         run: |
-          python -m pip --version
-          python -m pip freeze
+          {
+            python -m pip --version
+            python -m pip freeze
+          } | tee ci_logs/pip-freeze.log
 
       - name: Build with PyInstaller (spec)
         shell: bash
         run: |
-          python -m PyInstaller --noconfirm --clean tracker.spec
+          python -m PyInstaller --noconfirm --clean tracker.spec 2>&1 | tee ci_logs/pyinstaller.log
 
       # ---------------- Packaging ----------------
 
@@ -131,7 +147,7 @@ jobs:
           cd dist
           tar -czf "../tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz" tracker
 
-      # ---------------- Upload workflow artifacts ----------------
+      # ---------------- Upload build artifacts ----------------
 
       - name: Upload artifact (Windows)
         if: runner.os == 'Windows'
@@ -146,6 +162,15 @@ jobs:
         with:
           name: tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}
           path: tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz
+
+      # ---------------- Upload logs ALWAYS (even on failure) ----------------
+
+      - name: Upload CI logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs-${{ matrix.asset_os }}-${{ matrix.asset_arch }}
+          path: ci_logs
 
       # ---------------- Upload to GitHub Release (ONLY on release) ----------------
 
