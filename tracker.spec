@@ -17,6 +17,12 @@ datas += mp_datas + cv2_datas + np_datas
 binaries += mp_binaries + cv2_binaries + np_binaries
 hiddenimports += mp_hiddenimports + cv2_hiddenimports + np_hiddenimports
 
+# ✅ Fix Linux runtime crash: pkg_resources/jaraco expects backports.* at runtime in some builds
+hiddenimports += [
+    "backports",
+    "backports.tarfile",
+]
+
 # Bundle the model file next to the executable (NOTE: it's inside tracker/)
 datas += [("tracker/face_landmarker.task", ".")]
 

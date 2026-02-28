@@ -1,3 +1,4 @@
 opencv-python==4.10.0.84
 numpy==1.26.4
 pyinstaller==6.14.2
+backports.tarfile==1.2.0

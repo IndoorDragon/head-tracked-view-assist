@@ -9,6 +9,7 @@ import os
 import csv
 import io
 import signal
+import stat
 from pathlib import Path
 
 from .utils import (
@@ -160,6 +161,25 @@ def _resolve_tracker_executable() -> Path:
     # Return the first candidate for better error messages.
     cands = _tracker_exec_candidates()
     return cands[0] if cands else (_tracker_dir() / "tracker")
+
+
+def ensure_executable(exe_path: Path) -> None:
+    """
+    ✅ Linux/macOS UX fix:
+    ZIP extraction can drop executable permissions on POSIX.
+    Before launching, ensure the tracker file is executable.
+    """
+    if _is_windows():
+        return
+    try:
+        if not exe_path.exists():
+            return
+        st_mode = exe_path.stat().st_mode
+        # Add +x for user/group/other
+        exe_path.chmod(st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    except Exception:
+        # If this fails, launch will error and Blender will report it.
+        pass
 
 
 def _process_name_for_pid_windows(pid: int) -> str:
@@ -344,10 +364,8 @@ def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
 
     # If you package as PyInstaller one-folder, _internal is typically required.
     # If you package differently (one-file, or .app bundle on mac), _internal may not exist.
-    # We'll only enforce _internal if it's present in your distribution expectations.
     if (tracker_dir / "_internal").exists() is False:
         # Don't hard-fail on mac .app or one-file builds, but warn for your current workflow.
-        # If you *require* _internal on all platforms, change this to a hard error.
         pass
 
     try:
@@ -371,6 +389,9 @@ def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
         else:
             popen_kwargs["start_new_session"] = True
+
+        # ✅ NEW: on Linux/macOS, ensure the tracker is executable (no user chmod needed)
+        ensure_executable(exe)
 
         proc = subprocess.Popen([str(exe)], **popen_kwargs)
 
