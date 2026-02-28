@@ -60,17 +60,50 @@ jobs:
       - name: Debug — show repo files (cross-platform)
         shell: bash
         run: |
-          python -c "import sys, os; print('CWD:', os.getcwd()); print('Root:', os.listdir('.')); print('tracker exists:', os.path.isdir('tracker')); print('tracker/:', os.listdir('tracker') if os.path.isdir('tracker') else 'MISSING')"
+          python -c "import os; print('CWD:', os.getcwd()); print('Root:', os.listdir('.')); print('tracker exists:', os.path.isdir('tracker')); print('tracker/:', os.listdir('tracker') if os.path.isdir('tracker') else 'MISSING')"
 
       - name: Upgrade build tooling
         shell: bash
         run: |
           python -m pip install --upgrade pip setuptools wheel
 
-      - name: Install dependencies
+      # ---------------- Dependencies ----------------
+
+      - name: Install dependencies (normal)
+        if: runner.os != 'macOS' || matrix.asset_arch != 'x86_64'
         shell: bash
         run: |
           python -m pip install -r requirements.txt
+
+      - name: Install dependencies (macOS Intel workaround)
+        if: runner.os == 'macOS' && matrix.asset_arch == 'x86_64'
+        shell: bash
+        run: |
+          echo "macOS Intel: installing all requirements EXCEPT mediapipe, then installing mediapipe explicitly."
+
+          # Create a temp requirements file excluding any mediapipe lines (mediapipe or mediapipe-silicon, etc.)
+          python - << 'PY'
+          from pathlib import Path
+          src = Path("requirements.txt").read_text(encoding="utf-8").splitlines()
+          out = []
+          for line in src:
+              s = line.strip()
+              # keep comments/blank lines
+              if not s or s.startswith("#"):
+                  out.append(line)
+                  continue
+              # drop mediapipe-related requirement lines
+              if s.lower().startswith("mediapipe"):
+                  print("Skipping:", line)
+                  continue
+              out.append(line)
+          Path("requirements.no_mediapipe.txt").write_text("\n".join(out) + "\n", encoding="utf-8")
+          PY
+
+          python -m pip install -r requirements.no_mediapipe.txt
+
+          # Install mediapipe explicitly (latest stable on PyPI)
+          python -m pip install "mediapipe==0.10.32"
 
       - name: Debug — show installed packages
         shell: bash
@@ -98,8 +131,7 @@ jobs:
           cd dist
           tar -czf "../tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz" tracker
 
-      # ---------------- Always upload as workflow artifacts ----------------
-      # This works for BOTH manual runs and release runs.
+      # ---------------- Upload workflow artifacts ----------------
 
       - name: Upload artifact (Windows)
         if: runner.os == 'Windows'
@@ -115,7 +147,7 @@ jobs:
           name: tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}
           path: tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz
 
-      # ---------------- Upload to GitHub Release (ONLY when triggered by a Release tag) ----------------
+      # ---------------- Upload to GitHub Release (ONLY on release) ----------------
 
       - name: Upload release assets (Windows)
         if: runner.os == 'Windows' && github.event_name == 'release'
