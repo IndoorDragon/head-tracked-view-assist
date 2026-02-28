@@ -12,7 +12,7 @@ import mediapipe as mp
 def get_app_dir() -> Path:
     """
     Returns the directory this app should treat as its "working folder":
-    - When packaged (PyInstaller): folder containing tracker.exe
+    - When packaged (PyInstaller): folder containing tracker.exe / tracker binary
     - When running as .py: folder containing this script
     """
     if getattr(sys, "frozen", False):
@@ -39,7 +39,7 @@ PID_PATH = HERE / "tracker_pid.txt"
 
 # Model lookup order:
 # 1) explicit env override
-# 2) alongside tracker.exe
+# 2) alongside tracker binary
 # 3) PyInstaller one-folder internal dir (dist/tracker/_internal/...)
 _env_model = os.environ.get("HTVA_MODEL_PATH", "").strip()
 if _env_model:
@@ -63,7 +63,36 @@ CAM_INDEX_ENV = os.environ.get("HTVA_CAM_INDEX", "").strip()
 CAM_INDEX = int(CAM_INDEX_ENV) if CAM_INDEX_ENV.isdigit() else None
 
 MAX_CAM_TRY = 6  # tries 0..5
-BACKEND = cv2.CAP_DSHOW  # Windows-friendly
+
+
+# ----------------------------
+# Camera backend selection (cross-platform)
+# ----------------------------
+# Allow override (useful for debugging):
+#   HTVA_CAP_BACKEND=any|v4l2|dshow|msmf|avfoundation|gstreamer
+_backend_override = os.environ.get("HTVA_CAP_BACKEND", "").strip().lower()
+
+_BACKEND_MAP = {
+    "any": cv2.CAP_ANY,
+    "v4l2": getattr(cv2, "CAP_V4L2", cv2.CAP_ANY),
+    "dshow": getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY),
+    "msmf": getattr(cv2, "CAP_MSMF", cv2.CAP_ANY),
+    "avfoundation": getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY),
+    "gstreamer": getattr(cv2, "CAP_GSTREAMER", cv2.CAP_ANY),
+}
+
+if _backend_override in _BACKEND_MAP:
+    BACKEND = _BACKEND_MAP[_backend_override]
+else:
+    if sys.platform.startswith("win"):
+        # DSHOW is usually the most reliable for webcams on Windows in OpenCV
+        BACKEND = getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY)
+    elif sys.platform == "darwin":
+        # AVFoundation is the native backend on macOS
+        BACKEND = getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY)
+    else:
+        # Linux: V4L2 is the standard webcam backend
+        BACKEND = getattr(cv2, "CAP_V4L2", cv2.CAP_ANY)
 
 
 # ----------------------------
@@ -104,7 +133,19 @@ def remove_pid_file():
 # Camera open helpers
 # ----------------------------
 def try_open_cam(index: int):
+    """
+    Try to open a camera index with:
+    1) chosen platform backend
+    2) CAP_ANY fallback (lets OpenCV pick)
+    """
+    # Try forced backend first
     cap = cv2.VideoCapture(index, BACKEND)
+    if cap.isOpened():
+        return cap
+    cap.release()
+
+    # Fallback to CAP_ANY
+    cap = cv2.VideoCapture(index, cv2.CAP_ANY)
     if cap.isOpened():
         return cap
     cap.release()
@@ -122,7 +163,20 @@ def open_camera_auto(preferred=None):
         if cap:
             return cap, idx
 
-    cap = cv2.VideoCapture(0, BACKEND)
+    # Extra Linux fallback: try opening the device path directly
+    if sys.platform.startswith("linux"):
+        cap = cv2.VideoCapture("/dev/video0", BACKEND)
+        if cap.isOpened():
+            return cap, 0
+        cap.release()
+
+        cap = cv2.VideoCapture("/dev/video0", cv2.CAP_ANY)
+        if cap.isOpened():
+            return cap, 0
+        cap.release()
+
+    # Last resort
+    cap = cv2.VideoCapture(0, cv2.CAP_ANY)
     return cap, 0
 
 
@@ -306,13 +360,13 @@ try:
                 cv2.imshow("Head-Tracked View Assist — Tracker", frame)
 
                 key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
+                if key == ord("q"):
                     break
-                elif key == ord('r'):
+                elif key == ord("r"):
                     baseline_set = False
                     info_msg = "Recentered baseline"
-                elif key in (ord('n'), ord('p')):
-                    step = 1 if key == ord('n') else -1
+                elif key in (ord("n"), ord("p")):
+                    step = 1 if key == ord("n") else -1
                     next_idx = (cam_index + step) % MAX_CAM_TRY
 
                     new_cap = try_open_cam(next_idx)
