@@ -1,9 +1,8 @@
-# __init__.py
 bl_info = {
     "name": "Head-Tracked View Assist",
     "author": "IndoorDragon (indoordragon.com | github.com/indoordragon)",
-    "version": (0, 1, 3),
-    "blender": (3, 6, 0),
+    "version": (0, 1, 4),
+    "blender": (4, 2, 0),
     "location": "View3D > Sidebar > View Assist",
     "description": "Webcam head-tracking driven viewport assist via UDP (bundled tracker executable).",
     "warning": "",

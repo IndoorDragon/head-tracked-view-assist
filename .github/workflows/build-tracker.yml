@@ -13,7 +13,26 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
+        include:
+          # Windows
+          - os: windows-latest
+            asset_os: Windows
+            asset_arch: x86_64
+
+          # Linux (GitHub hosted is x86_64)
+          - os: ubuntu-latest
+            asset_os: Linux
+            asset_arch: x86_64
+
+          # macOS Apple Silicon
+          - os: macos-14
+            asset_os: macOS
+            asset_arch: arm64
+
+          # macOS Intel
+          - os: macos-15-intel
+            asset_os: macOS
+            asset_arch: x86_64
 
     runs-on: ${{ matrix.os }}
 
@@ -26,21 +45,33 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Debug — show repo files (cross-platform)
+      - name: Debug — show platform + arch
+        shell: bash
         run: |
-          python -c "import sys, os; print('Python:', sys.version); print('CWD:', os.getcwd()); print('Root:', os.listdir('.')); print('tracker exists:', os.path.isdir('tracker')); print('tracker/:', os.listdir('tracker') if os.path.isdir('tracker') else 'MISSING')"
+          echo "Runner OS: $RUNNER_OS"
+          uname -a || true
+          uname -m || true
+          python -c "import sys, platform; print('Python:', sys.version); print('platform.system:', platform.system()); print('platform.machine:', platform.machine())"
+
+      - name: Debug — show repo files (cross-platform)
+        shell: bash
+        run: |
+          python -c "import sys, os; print('CWD:', os.getcwd()); print('Root:', os.listdir('.')); print('tracker exists:', os.path.isdir('tracker')); print('tracker/:', os.listdir('tracker') if os.path.isdir('tracker') else 'MISSING')"
 
       - name: Install dependencies
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
       - name: Debug — show installed packages
+        shell: bash
         run: |
           python -m pip --version
           python -m pip freeze
 
       - name: Build with PyInstaller (spec)
+        shell: bash
         run: |
           python -m PyInstaller --noconfirm --clean tracker.spec
 
@@ -48,17 +79,18 @@ jobs:
 
       - name: Create archive (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          powershell -Command "Compress-Archive -Path dist\\tracker\\* -DestinationPath tracker-windows.zip"
+          Compress-Archive -Path dist\tracker\* -DestinationPath tracker-windows.zip
 
       - name: Create archive (macOS/Linux)
         if: runner.os != 'Windows'
+        shell: bash
         run: |
           cd dist
-          tar -czf ../tracker-${{ runner.os }}.tar.gz tracker
+          tar -czf "../tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz" tracker
 
-      # ---------------- Always upload as workflow artifacts ----------------
-      # This works for BOTH manual runs and release runs.
+      # ---------------- Upload as workflow artifacts ----------------
 
       - name: Upload artifact (Windows)
         if: runner.os == 'Windows'
@@ -71,10 +103,10 @@ jobs:
         if: runner.os != 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: tracker-${{ runner.os }}
-          path: tracker-${{ runner.os }}.tar.gz
+          name: tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}
+          path: tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz
 
-      # ---------------- Upload to GitHub Release (ONLY when triggered by a Release tag) ----------------
+      # ---------------- Upload to GitHub Release (ONLY on release) ----------------
 
       - name: Upload release assets (Windows)
         if: runner.os == 'Windows' && github.event_name == 'release'
@@ -86,4 +118,4 @@ jobs:
         if: runner.os != 'Windows' && github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
-          files: tracker-${{ runner.os }}.tar.gz
+          files: tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz

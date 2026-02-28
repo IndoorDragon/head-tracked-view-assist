@@ -1,4 +1,3 @@
-# operators.py
 import bpy
 import math
 import mathutils
@@ -9,6 +8,7 @@ import time
 import os
 import csv
 import io
+import signal
 from pathlib import Path
 
 from .utils import (
@@ -30,16 +30,25 @@ def _tracker_dir() -> Path:
     return Path(__file__).resolve().parent / "tracker"
 
 
-def _tracker_exe_path() -> Path:
-    return _tracker_dir() / "tracker.exe"
-
-
 def _tracker_internal_dir() -> Path:
     return _tracker_dir() / "_internal"
 
 
+def _platform_name() -> str:
+    # "Windows", "Darwin" (macOS), "Linux"
+    return platform.system()
+
+
 def _is_windows() -> bool:
-    return platform.system().lower().startswith("win")
+    return _platform_name().lower().startswith("win")
+
+
+def _is_macos() -> bool:
+    return _platform_name().lower() == "darwin"
+
+
+def _is_linux() -> bool:
+    return _platform_name().lower() == "linux"
 
 
 def _pid_file() -> Path:
@@ -86,7 +95,11 @@ def _send_tracker_quit():
 def _port_in_use_udp(port: int) -> bool:
     """
     True if something is already bound to 127.0.0.1:port (UDP).
-    We use this to detect an already-running tracker (prevents WinError 10048).
+    We use this to detect an already-running tracker.
+
+    NOTE:
+    Blender itself binds the POSE port (5005) when Status is ON.
+    So we use CONTROL port (5006) to detect tracker.
     """
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -102,21 +115,55 @@ def _port_in_use_udp(port: int) -> bool:
 
 
 def _is_tracker_running() -> bool:
-    """
-    IMPORTANT:
-    Blender itself binds the POSE port (5005) when Status is ON.
-    So we must NOT use 5005 to detect whether tracker.exe is running.
-
-    tracker.exe should be the one binding the CONTROL port (5006).
-    """
+    """Tracker should be the one binding the CONTROL port (5006)."""
     return _port_in_use_udp(HTVA_CTRL_PORT)
 
 
+def _tracker_exec_candidates() -> list[Path]:
+    """
+    Return candidate executable paths in preferred order for the current OS.
+
+    Expected packaging (recommended):
+
+    Windows:
+      tracker/tracker.exe
+      tracker/_internal/...
+
+    Linux:
+      tracker/tracker
+      tracker/_internal/...
+
+    macOS:
+      tracker/tracker.app/Contents/MacOS/tracker   (preferred)
+      tracker/tracker                              (fallback, if you distribute a plain binary)
+      tracker/_internal/... (if using one-folder layout)
+    """
+    td = _tracker_dir()
+
+    if _is_windows():
+        return [td / "tracker.exe"]
+
+    if _is_macos():
+        return [
+            td / "tracker.app" / "Contents" / "MacOS" / "tracker",
+            td / "tracker",
+        ]
+
+    # Linux and other POSIX
+    return [td / "tracker"]
+
+
+def _resolve_tracker_executable() -> Path:
+    for p in _tracker_exec_candidates():
+        if p.exists():
+            return p
+    # Return the first candidate for better error messages.
+    cands = _tracker_exec_candidates()
+    return cands[0] if cands else (_tracker_dir() / "tracker")
+
+
 def _process_name_for_pid_windows(pid: int) -> str:
-    """
-    Return the image name for a PID using tasklist (Windows).
-    Returns "" if unknown.
-    """
+    """Return the image name for a PID using tasklist (Windows)."""
     try:
         r = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
@@ -136,18 +183,42 @@ def _process_name_for_pid_windows(pid: int) -> str:
         return ""
 
 
-def _force_kill_pid_if_tracker(pid: int) -> bool:
+def _process_comm_for_pid_posix(pid: int) -> str:
+    """Return process 'comm' for PID via ps on macOS/Linux. Empty if unknown."""
+    try:
+        r = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "comm="],
+            capture_output=True,
+            text=True,
+        )
+        comm = (r.stdout or "").strip()
+        return comm
+    except Exception:
+        return ""
+
+
+def _pid_looks_like_tracker(pid: int) -> bool:
     """
-    Kill only if PID is actually tracker.exe (avoid stale PID accidents).
-    Returns True if we attempted to kill.
+    Defensive check to avoid killing an unrelated process due to stale PID file.
+    We accept:
+      - Windows: exact "tracker.exe"
+      - macOS/Linux: basename contains "tracker" (comm often returns full path or basename)
     """
     if pid <= 0:
         return False
 
-    name = _process_name_for_pid_windows(pid).lower()
-    if name != "tracker.exe":
-        return False
+    if _is_windows():
+        name = _process_name_for_pid_windows(pid).lower()
+        return name == "tracker.exe"
 
+    comm = _process_comm_for_pid_posix(pid).strip()
+    if not comm:
+        return False
+    base = Path(comm).name.lower()
+    return "tracker" in base
+
+
+def _kill_pid_windows(pid: int) -> bool:
     try:
         subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
@@ -159,6 +230,48 @@ def _force_kill_pid_if_tracker(pid: int) -> bool:
         return False
 
 
+def _kill_pid_posix(pid: int) -> bool:
+    """
+    Try SIGTERM then SIGKILL if needed.
+    """
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except Exception:
+        return False
+
+    # grace
+    for _ in range(10):
+        time.sleep(0.05)
+        try:
+            os.kill(pid, 0)
+            still_alive = True
+        except Exception:
+            still_alive = False
+        if not still_alive:
+            return True
+
+    # force
+    try:
+        os.kill(pid, signal.SIGKILL)
+        return True
+    except Exception:
+        return False
+
+
+def _force_kill_pid_if_tracker(pid: int) -> bool:
+    """
+    Kill only if PID looks like tracker (avoid stale PID accidents).
+    Returns True if we attempted to kill.
+    """
+    if not _pid_looks_like_tracker(pid):
+        return False
+
+    if _is_windows():
+        return _kill_pid_windows(pid)
+    else:
+        return _kill_pid_posix(pid)
+
+
 def htva_stop_tracker_on_exit():
     """
     Called during Blender shutdown via atexit (registered in __init__.py).
@@ -166,9 +279,6 @@ def htva_stop_tracker_on_exit():
     Do NOT use bpy.context here.
     """
     try:
-        if not _is_windows():
-            return
-
         if not _is_tracker_running():
             _clear_tracker_pid()
             return
@@ -178,11 +288,11 @@ def htva_stop_tracker_on_exit():
 
         # 2) short grace period
         try:
-            time.sleep(0.2)
+            time.sleep(0.25)
         except Exception:
             pass
 
-        # 3) force kill only if PID still matches tracker.exe
+        # 3) force kill only if PID still matches tracker
         pid = _read_tracker_pid()
         if pid > 0 and _is_tracker_running():
             _force_kill_pid_if_tracker(pid)
@@ -200,18 +310,13 @@ def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
     show_preview=False -> background (no preview)
     Returns True if launched successfully, False otherwise.
     """
-    if not _is_windows():
-        if report_fn:
-            report_fn({'ERROR'}, "Tracker launcher currently supports Windows only.")
-        return False
-
     if _is_tracker_running():
         if report_fn:
             report_fn({'INFO'}, "Tracker is already running.")
         return False
 
     tracker_dir = _tracker_dir()
-    exe = _tracker_exe_path()
+    exe = _resolve_tracker_executable()
     internal_dir = _tracker_internal_dir()
 
     if not tracker_dir.exists():
@@ -220,27 +325,33 @@ def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
         return False
 
     if not exe.exists():
+        # Give OS-specific guidance
+        if _is_windows():
+            expected = tracker_dir / "tracker.exe"
+        elif _is_macos():
+            expected = tracker_dir / "tracker.app" / "Contents" / "MacOS" / "tracker"
+        else:
+            expected = tracker_dir / "tracker"
+
         if report_fn:
             report_fn(
                 {'ERROR'},
-                "tracker.exe not found:\n"
-                f"{exe}\n\n"
-                "Make sure you copied the PyInstaller dist output into the add-on's tracker/ folder."
+                "Tracker executable not found.\n\n"
+                f"Expected (for this OS) something like:\n{expected}\n\n"
+                "Make sure you copied your platform's build output into the add-on's tracker/ folder."
             )
         return False
 
-    if not internal_dir.exists():
-        if report_fn:
-            report_fn(
-                {'ERROR'},
-                "_internal folder not found:\n"
-                f"{internal_dir}\n\n"
-                "This folder must be copied alongside tracker.exe (PyInstaller one-folder output)."
-            )
-        return False
+    # If you package as PyInstaller one-folder, _internal is typically required.
+    # If you package differently (one-file, or .app bundle on mac), _internal may not exist.
+    # We'll only enforce _internal if it's present in your distribution expectations.
+    if (tracker_dir / "_internal").exists() is False:
+        # Don't hard-fail on mac .app or one-file builds, but warn for your current workflow.
+        # If you *require* _internal on all platforms, change this to a hard error.
+        pass
 
     try:
-        env = dict(**{k: v for k, v in dict(os.environ).items()})
+        env = dict(os.environ)
         env["HTVA_UDP_IP"] = env.get("HTVA_UDP_IP", "127.0.0.1")
         env["HTVA_UDP_PORT"] = env.get("HTVA_UDP_PORT", str(HTVA_POSE_PORT))
         env["HTVA_CTRL_PORT"] = env.get("HTVA_CTRL_PORT", str(HTVA_CTRL_PORT))
@@ -248,18 +359,26 @@ def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
         # 1 = windowed preview, 0 = background
         env["HTVA_SHOW_PREVIEW"] = "1" if show_preview else "0"
 
-        proc = subprocess.Popen(
-            [str(exe)],
-            cwd=str(tracker_dir),
-            env=env,
-            creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-        )
+        popen_kwargs = {
+            "cwd": str(tracker_dir),
+            "env": env,
+        }
 
-        # NEW: persist PID for safe fallback kill
+        # Background behavior:
+        # - Windows: CREATE_NO_WINDOW suppresses console window (if applicable)
+        # - POSIX: start_new_session allows more reliable termination (separate process group)
+        if _is_windows():
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        else:
+            popen_kwargs["start_new_session"] = True
+
+        proc = subprocess.Popen([str(exe)], **popen_kwargs)
+
+        # Persist PID for safe fallback kill
         _write_tracker_pid(proc.pid)
 
         if report_fn:
-            report_fn({'INFO'}, "Launching tracker…")
+            report_fn({'INFO'}, f"Launching tracker ({_platform_name()})…")
         return True
 
     except Exception as e:
@@ -297,17 +416,18 @@ class HTVA_OT_stop_tracker(bpy.types.Operator):
     bl_options = {'REGISTER'}
 
     def execute(self, context):
-        if not _is_windows():
-            self.report({'ERROR'}, "Stop tracker supports Windows only.")
+        if not _is_tracker_running():
+            _clear_tracker_pid()
+            self.report({'INFO'}, "Tracker is not running.")
             return {'CANCELLED'}
 
         # 1) Try graceful quit
         _send_tracker_quit()
 
         # Give it a moment to exit cleanly
-        time.sleep(0.2)
+        time.sleep(0.25)
 
-        # 2) If it’s still running, fallback kill (ONLY if PID is tracker.exe)
+        # 2) If it’s still running, fallback kill (ONLY if PID looks like tracker)
         pid = _read_tracker_pid()
         if pid > 0 and _is_tracker_running():
             killed = _force_kill_pid_if_tracker(pid)
@@ -316,7 +436,7 @@ class HTVA_OT_stop_tracker(bpy.types.Operator):
                 self.report({'INFO'}, "Tracker stopped.")
                 return {'FINISHED'}
             else:
-                self.report({'WARNING'}, "Sent QUIT, but PID did not match tracker.exe (not killing).")
+                self.report({'WARNING'}, "Sent QUIT, but PID did not match tracker (not killing).")
                 return {'FINISHED'}
 
         _clear_tracker_pid()
