@@ -21,21 +21,25 @@ jobs:
             os: windows-latest
             artifact_suffix: windows
             python_version: "3.11"
+            mediapipe_version: "0.10.32"
 
           - name: linux-x86_64
             os: ubuntu-latest
             artifact_suffix: linux-x86_64
             python_version: "3.11"
+            mediapipe_version: "0.10.32"
 
           - name: macos-arm64
             os: macos-latest
             artifact_suffix: macos-arm64
             python_version: "3.11"
+            mediapipe_version: "0.10.32"
 
           - name: macos-x86_64
             os: macos-15-intel
             artifact_suffix: macos-x86_64
             python_version: "3.10"
+            mediapipe_version: "0.10.21"
 
     steps:
       - name: Checkout
@@ -50,12 +54,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pyinstaller
 
-      - name: Pin MediaPipe for macOS Intel (x86_64)
-        if: matrix.artifact_suffix == 'macos-x86_64'
+      - name: Install MediaPipe (platform-specific)
         run: |
-          pip install "mediapipe==0.10.21"
+          pip install "mediapipe==${{ matrix.mediapipe_version }}"
 
       - name: Build tracker with PyInstaller
         run: |
@@ -79,7 +81,6 @@ jobs:
           tag = os.environ.get("GITHUB_REF_NAME", "untagged")
           platform = os.environ["PLATFORM_SUFFIX"]
 
-          # IMPORTANT: Blender requires __init__.py inside a folder in the ZIP.
           addon_root_name = "head_tracked_view_assist"
 
           repo = Path(".").resolve()
@@ -110,14 +111,11 @@ jobs:
           tracker_dst = addon_root / "tracker"
           tracker_dst.mkdir(parents=True, exist_ok=True)
 
-          # Case A: PyInstaller onedir output at dist/tracker/
           dist_onedir = dist / "tracker"
-          # Case B: PyInstaller onefile output at dist/tracker(.exe)
           dist_onefile_win = dist / "tracker.exe"
           dist_onefile_unix = dist / "tracker"
 
           if dist_onedir.exists() and dist_onedir.is_dir():
-              # Copy CONTENTS of dist/tracker/ into addon_root/tracker/
               for item in dist_onedir.iterdir():
                   dst = tracker_dst / item.name
                   if item.is_dir():
@@ -129,7 +127,6 @@ jobs:
           elif dist_onefile_unix.exists():
               shutil.copy2(dist_onefile_unix, tracker_dst / dist_onefile_unix.name)
           else:
-              # Fall back: copy everything in dist into tracker/ (last resort)
               dist_items = list(dist.iterdir())
               if not dist_items:
                   raise RuntimeError("dist/ is empty. PyInstaller produced no outputs.")
@@ -141,7 +138,6 @@ jobs:
                       shutil.copy2(item, dst)
 
           # 3) Include required runtime asset(s) if they live in repo/tracker/
-          # (Common: face_landmarker.task)
           maybe_task = repo / "tracker" / "face_landmarker.task"
           if maybe_task.exists():
               shutil.copy2(maybe_task, tracker_dst / maybe_task.name)
