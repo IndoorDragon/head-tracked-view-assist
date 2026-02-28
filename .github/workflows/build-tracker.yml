@@ -116,8 +116,9 @@ jobs:
 
           python -m pip install -r requirements.no_mediapipe.txt 2>&1 | tee -a ci_logs/pip-install.log
 
-          # mediapipe latest (0.10.32 per PyPI release history)
-          python -m pip install "mediapipe==0.10.32" 2>&1 | tee -a ci_logs/pip-install.log
+          # IMPORTANT FIX:
+          # Latest mediapipe available for macOS Intel x86_64 is 0.10.21
+          python -m pip install "mediapipe==0.10.21" 2>&1 | tee -a ci_logs/pip-install.log
 
       - name: Debug — show installed packages
         shell: bash
