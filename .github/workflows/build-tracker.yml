@@ -18,21 +18,25 @@ jobs:
           - os: windows-latest
             asset_os: Windows
             asset_arch: x86_64
+            python: "3.11"
 
           # Linux (GitHub hosted is x86_64)
           - os: ubuntu-latest
             asset_os: Linux
             asset_arch: x86_64
+            python: "3.11"
 
           # macOS Apple Silicon
           - os: macos-14
             asset_os: macOS
             asset_arch: arm64
+            python: "3.11"
 
           # macOS Intel
           - os: macos-15-intel
             asset_os: macOS
             asset_arch: x86_64
+            python: "3.10"
 
     runs-on: ${{ matrix.os }}
 
@@ -40,10 +44,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
 
       - name: Debug — show platform + arch
         shell: bash
@@ -58,10 +62,14 @@ jobs:
         run: |
           python -c "import sys, os; print('CWD:', os.getcwd()); print('Root:', os.listdir('.')); print('tracker exists:', os.path.isdir('tracker')); print('tracker/:', os.listdir('tracker') if os.path.isdir('tracker') else 'MISSING')"
 
+      - name: Upgrade build tooling
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+
       - name: Install dependencies
         shell: bash
         run: |
-          python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
       - name: Debug — show installed packages
@@ -90,7 +98,8 @@ jobs:
           cd dist
           tar -czf "../tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz" tracker
 
-      # ---------------- Upload as workflow artifacts ----------------
+      # ---------------- Always upload as workflow artifacts ----------------
+      # This works for BOTH manual runs and release runs.
 
       - name: Upload artifact (Windows)
         if: runner.os == 'Windows'
@@ -106,7 +115,7 @@ jobs:
           name: tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}
           path: tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz
 
-      # ---------------- Upload to GitHub Release (ONLY on release) ----------------
+      # ---------------- Upload to GitHub Release (ONLY when triggered by a Release tag) ----------------
 
       - name: Upload release assets (Windows)
         if: runner.os == 'Windows' && github.event_name == 'release'
