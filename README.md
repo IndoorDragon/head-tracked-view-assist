@@ -112,6 +112,15 @@ No external network access is required.
 - The selected camera is saved for future launches
 
 
+## ⚠ Known Issues (v0.1.4)
+
+• Linux: Tracker window may appear black, but tracking functions normally.
+
+• macOS (Intel & Apple Silicon): Tracker does not auto-launch from Blender menu.  Workaround: Manually run the tracker executable inside the add-on folder.
+
+Fixes are planned for v0.1.5.
+
+
 ## License
 
 This project is licensed under the MIT License.  
