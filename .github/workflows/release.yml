@@ -116,7 +116,6 @@ jobs:
           security list-keychains -d user -s "$KEYCHAIN"
           security default-keychain -s "$KEYCHAIN"
 
-          # Allow codesign tools to access cert without UI prompts
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PW" "$KEYCHAIN"
 
           echo "Available signing identities:"
@@ -174,7 +173,6 @@ jobs:
 
           echo "Notary Submission ID: $SUB_ID"
 
-          # Save for later finalization
           mkdir -p notary_out
           {
             echo "tag=${GITHUB_REF_NAME}"
@@ -182,7 +180,6 @@ jobs:
             echo "submission_id=${SUB_ID}"
           } > "notary_out/notary-${PLATFORM_SUFFIX}.txt"
 
-          # Also write to the GitHub job summary for easy copy/paste
           {
             echo "## Apple Notary Submission"
             echo ""
@@ -204,33 +201,30 @@ jobs:
           name: notary-submission-${{ matrix.artifact_suffix }}
           path: notary_out/notary-${{ matrix.artifact_suffix }}.txt
 
-      # ---------------- Package Blender add-on zip ----------------
+      # ---------------- Stage Blender add-on folder (ALL platforms) ----------------
 
-      - name: Package Blender add-on zip (correct Blender structure)
+      - name: Stage Blender add-on folder (correct Blender structure)
         shell: bash
         run: |
           python - << 'PY'
-          import os, shutil, zipfile
+          import os, shutil
           from pathlib import Path
-
-          tag = os.environ.get("GITHUB_REF_NAME", "untagged")
-          platform = os.environ["PLATFORM_SUFFIX"]
 
           addon_root_name = "head_tracked_view_assist"
 
           repo = Path(".").resolve()
-          out_dir = repo / "release_out"
           stage = repo / "release_stage"
+          out_dir = repo / "release_out"
 
-          shutil.rmtree(out_dir, ignore_errors=True)
           shutil.rmtree(stage, ignore_errors=True)
-          out_dir.mkdir(parents=True, exist_ok=True)
+          shutil.rmtree(out_dir, ignore_errors=True)
           stage.mkdir(parents=True, exist_ok=True)
+          out_dir.mkdir(parents=True, exist_ok=True)
 
           addon_root = stage / addon_root_name
           addon_root.mkdir(parents=True, exist_ok=True)
 
-          # 1) Copy only addon .py files into addon_root/
+          # 1) Copy add-on .py files
           addon_py = ["__init__.py","operators.py","prefs.py","props.py","ui.py","utils.py"]
           for fn in addon_py:
               src = repo / fn
@@ -246,23 +240,21 @@ jobs:
           tracker_dst = addon_root / "tracker"
           tracker_dst.mkdir(parents=True, exist_ok=True)
 
-          dist_onedir = dist / "tracker"
           dist_app = dist / "tracker.app"
+          dist_onedir = dist / "tracker"
           dist_onefile_win = dist / "tracker.exe"
           dist_onefile_unix = dist / "tracker"
 
           if dist_app.exists() and dist_app.is_dir():
-              # macOS .app bundle
               dst = tracker_dst / "tracker.app"
               if dst.exists():
                   shutil.rmtree(dst)
-              shutil.copytree(dist_app, dst)
+              shutil.copytree(dist_app, dst, symlinks=True)
           elif dist_onedir.exists() and dist_onedir.is_dir():
-              # onedir folder build
               for item in dist_onedir.iterdir():
                   dst = tracker_dst / item.name
                   if item.is_dir():
-                      shutil.copytree(item, dst)
+                      shutil.copytree(item, dst, symlinks=True)
                   else:
                       shutil.copy2(item, dst)
           elif dist_onefile_win.exists():
@@ -276,16 +268,58 @@ jobs:
               for item in dist_items:
                   dst = tracker_dst / item.name
                   if item.is_dir():
-                      shutil.copytree(item, dst)
+                      shutil.copytree(item, dst, symlinks=True)
                   else:
                       shutil.copy2(item, dst)
 
-          # 3) Include required runtime asset(s) if they live in repo/tracker/
+          # 3) Include model file if present in repo/tracker/
           maybe_task = repo / "tracker" / "face_landmarker.task"
           if maybe_task.exists():
               shutil.copy2(maybe_task, tracker_dst / maybe_task.name)
 
-          # 4) Zip it with correct folder structure
+          # Helpful debug manifest
+          manifest = repo / "release_out" / "zip_manifest.txt"
+          with manifest.open("w", encoding="utf-8") as f:
+              for p in sorted(stage.rglob("*")):
+                  f.write(str(p.relative_to(stage)) + ("\n" if not p.is_dir() else "/\n"))
+
+          print("Staged:", stage)
+          PY
+
+      # ---------------- ZIP (macOS uses ditto) ----------------
+
+      - name: Zip add-on (macOS, preserve .app bundle)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          PLATFORM="${{ matrix.artifact_suffix }}"
+          ZIP="head_tracked_view_assist_${TAG}_${PLATFORM}.zip"
+
+          rm -f "release_out/$ZIP"
+
+          # IMPORTANT: ditto preserves symlinks/resource forks in .app bundles
+          ditto -c -k --sequesterRsrc --keepParent \
+            "release_stage/head_tracked_view_assist" \
+            "release_out/$ZIP"
+
+          ls -la "release_out/$ZIP"
+          echo "Wrote release_out/$ZIP"
+
+      - name: Zip add-on (non-macOS)
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          python - << 'PY'
+          import os, zipfile
+          from pathlib import Path
+
+          tag = os.environ.get("GITHUB_REF_NAME", "untagged")
+          platform = os.environ["PLATFORM_SUFFIX"]
+
+          stage = Path("release_stage")
+          out_dir = Path("release_out")
           zip_name = f"head_tracked_view_assist_{tag}_{platform}.zip"
           zip_path = out_dir / zip_name
 
