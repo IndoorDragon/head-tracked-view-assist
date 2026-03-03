@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.1.5-rc3)"
+        description: "Release tag (e.g. v0.1.5-rc5)"
         required: true
         type: string
       platform:
-        description: "Platform suffix (macos-arm64 or macos-x86_64)"
+        description: "Platform suffix"
         required: true
         type: choice
         options:
@@ -31,6 +31,7 @@ jobs:
   finalize:
     name: Finalize (${{ inputs.platform }})
     runs-on: macos-14
+    if: ${{ github.event_name == 'workflow_dispatch' }}
 
     steps:
       - name: Confirm inputs
@@ -61,7 +62,6 @@ jobs:
           SLEEP_SEC=60
 
           START_TS="$(date +%s)"
-
           echo "Polling notary status every ${SLEEP_SEC}s (max ${MAX_MIN} minutes)..."
 
           while true; do
@@ -69,7 +69,7 @@ jobs:
             ELAPSED=$((NOW_TS - START_TS))
 
             if [ $ELAPSED -ge $MAX_SEC ]; then
-              echo "Timed out after ${ELAPSED}s. Still not accepted."
+              echo "Timed out after ${ELAPSED}s."
               echo "Last known info:"
               xcrun notarytool info "$SUB_ID" \
                 --issuer "$APPLE_NOTARY_ISSUER_ID" \
@@ -92,10 +92,9 @@ jobs:
 
             echo "$OUT"
 
-            # Retry transient network issues
             if [ $STATUS -ne 0 ]; then
               if echo "$OUT" | grep -qiE "offline|NSURLErrorDomain|No network route|timed out|could not connect"; then
-                echo "Transient network error while checking status. Sleeping ${SLEEP_SEC}s..."
+                echo "Transient network error. Sleeping ${SLEEP_SEC}s..."
                 sleep "$SLEEP_SEC"
                 continue
               fi
@@ -106,8 +105,7 @@ jobs:
             export OUT
             NOTARY_STATUS="$(python - << 'PY'
 import os, json
-s = os.environ.get("OUT","").strip()
-j = json.loads(s)
+j = json.loads(os.environ["OUT"])
 print(j.get("status",""))
 PY
             )"
@@ -145,13 +143,10 @@ PY
 
           TAG="${{ inputs.tag }}"
           PLATFORM="${{ inputs.platform }}"
+          ZIP="head_tracked_view_assist_${TAG}_${PLATFORM}.zip"
 
-          # Your asset naming: head_tracked_view_assist_<tag>_<platform>.zip
-          PATTERN="head_tracked_view_assist_${TAG}_${PLATFORM}.zip"
-
-          echo "Downloading release asset: $PATTERN"
-          gh release download "$TAG" --pattern "$PATTERN" --clobber
-
+          echo "Downloading release asset: $ZIP"
+          gh release download "$TAG" --pattern "$ZIP" --clobber
           ls -la
 
       - name: Unzip, staple tracker.app, verify
@@ -169,8 +164,7 @@ PY
 
           APP_PATH="workdir/head_tracked_view_assist/tracker/tracker.app"
           if [ ! -d "$APP_PATH" ]; then
-            echo "ERROR: tracker.app not found at expected path: $APP_PATH"
-            echo "Listing tracker folder:"
+            echo "ERROR: tracker.app not found at: $APP_PATH"
             ls -la workdir/head_tracked_view_assist/tracker || true
             exit 1
           fi
@@ -193,14 +187,11 @@ PY
 
           TAG="${{ inputs.tag }}"
           PLATFORM="${{ inputs.platform }}"
-
           ZIP="head_tracked_view_assist_${TAG}_${PLATFORM}.zip"
 
           echo "Repacking $ZIP..."
           rm -f "$ZIP"
           (cd workdir && zip -qr "../$ZIP" head_tracked_view_assist)
-
-          ls -la "$ZIP"
 
           echo "Uploading (overwrite) to release $TAG..."
           gh release upload "$TAG" "$ZIP" --clobber
@@ -211,8 +202,8 @@ PY
           {
             echo "## Finalize Notarization Complete"
             echo ""
-            echo "- Tag: \`${{ inputs.tag }}\`"
-            echo "- Platform: \`${{ inputs.platform }}\`"
-            echo "- Submission ID: \`${{ inputs.submission_id }}\`"
+            echo "- Tag: ${{ inputs.tag }}"
+            echo "- Platform: ${{ inputs.platform }}"
+            echo "- Submission ID: ${{ inputs.submission_id }}"
             echo "- Action: Downloaded release zip, stapled tracker.app, re-uploaded zip (overwritten)."
           } >> "$GITHUB_STEP_SUMMARY"
