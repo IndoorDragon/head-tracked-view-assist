@@ -104,10 +104,10 @@ jobs:
 
             export OUT
             NOTARY_STATUS="$(python - << 'PY'
-import os, json
-j = json.loads(os.environ["OUT"])
-print(j.get("status",""))
-PY
+          import os, json
+          j = json.loads(os.environ["OUT"])
+          print(j.get("status",""))
+          PY
             )"
 
             if [ "$NOTARY_STATUS" = "Accepted" ]; then
