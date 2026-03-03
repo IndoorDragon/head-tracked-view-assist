@@ -161,48 +161,37 @@ jobs:
           echo "Creating notarization ZIP..."
           ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/tracker-notary.zip"
 
-          echo "Submitting to Apple notarization (capturing Submission ID)..."
+          echo "Submitting to Apple notarization (get Submission ID immediately)..."
+          SUB_ID="$(
+            xcrun notarytool submit "$RUNNER_TEMP/tracker-notary.zip" \
+              --issuer "$APPLE_NOTARY_ISSUER_ID" \
+              --key-id "$APPLE_NOTARY_KEY_ID" \
+              --key "$RUNNER_TEMP/AuthKey.p8" \
+              --team-id "$APPLE_TEAM_ID" \
+              --output-format json \
+            | python -c "import sys, json; print(json.load(sys.stdin)['id'])"
+          )"
+
+          echo "Notary Submission ID: $SUB_ID"
+
+          echo "Waiting for notarization to complete (timeout 45m)..."
           set +e
-          JSON_OUT="$(xcrun notarytool submit "$RUNNER_TEMP/tracker-notary.zip" \
+          xcrun notarytool wait "$SUB_ID" \
             --issuer "$APPLE_NOTARY_ISSUER_ID" \
             --key-id "$APPLE_NOTARY_KEY_ID" \
             --key "$RUNNER_TEMP/AuthKey.p8" \
             --team-id "$APPLE_TEAM_ID" \
-            --wait \
-            --timeout 45m \
-            --output-format json)"
+            --timeout 45m
           STATUS=$?
           set -e
 
-          echo "$JSON_OUT"
-
-          SUB_ID="$(python - << 'PY'
-          import json, os, sys
-          s = os.environ.get("JSON_OUT", "").strip()
-          if not s:
-              print("")
-              sys.exit(0)
-          try:
-              j = json.loads(s)
-          except Exception:
-              print("")
-              sys.exit(0)
-          print(j.get("id",""))
-          PY
-          )"
-          echo "Notary Submission ID: ${SUB_ID:-<missing>}"
-
           if [ $STATUS -ne 0 ]; then
-            echo "Notarization command failed (exit $STATUS). Attempting to fetch notary log..."
-            if [ -n "${SUB_ID:-}" ]; then
-              xcrun notarytool log "$SUB_ID" \
-                --issuer "$APPLE_NOTARY_ISSUER_ID" \
-                --key-id "$APPLE_NOTARY_KEY_ID" \
-                --key "$RUNNER_TEMP/AuthKey.p8" \
-                --team-id "$APPLE_TEAM_ID" || true
-            else
-              echo "No submission id could be parsed from notarytool output."
-            fi
+            echo "Notarization did not complete successfully (exit $STATUS). Fetching notary log..."
+            xcrun notarytool log "$SUB_ID" \
+              --issuer "$APPLE_NOTARY_ISSUER_ID" \
+              --key-id "$APPLE_NOTARY_KEY_ID" \
+              --key "$RUNNER_TEMP/AuthKey.p8" \
+              --team-id "$APPLE_TEAM_ID" || true
             exit $STATUS
           fi
 
