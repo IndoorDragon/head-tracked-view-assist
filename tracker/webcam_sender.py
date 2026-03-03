@@ -1,3 +1,4 @@
+# webcam_sender.py
 import os
 import sys
 import json
@@ -88,6 +89,10 @@ PREVIEW_W = int(os.environ.get("HTVA_PREVIEW_W", _default_preview_w))
 PREVIEW_H = int(os.environ.get("HTVA_PREVIEW_H", _default_preview_h))
 CAPTURE_W = int(os.environ.get("HTVA_CAPTURE_W", _default_capture_w))
 CAPTURE_H = int(os.environ.get("HTVA_CAPTURE_H", _default_capture_h))
+
+# Windows-only: auto-fit the preview window to the first captured frame
+# (prevents "stretched face" when the camera is 4:3 but the window is 16:9)
+AUTO_FIT_WIN_PREVIEW = os.environ.get("HTVA_WIN_AUTOFIT", "1") != "0"
 
 CAM_INDEX_ENV = os.environ.get("HTVA_CAM_INDEX", "").strip()
 CAM_INDEX = int(CAM_INDEX_ENV) if CAM_INDEX_ENV.isdigit() else None
@@ -334,6 +339,9 @@ if SHOW_PREVIEW:
     except Exception:
         pass
 
+# Track whether we already auto-fit the window on Windows
+_win_autofit_done = False
+
 baseline_set = False
 base_x = base_y = base_size = 0.0
 
@@ -355,6 +363,22 @@ try:
                 continue
 
             h, w = frame.shape[:2]
+
+            # --- Windows fix: match the preview window to the camera aspect ratio ---
+            # Only do this once, and only when we're NOT explicitly forcing a preview size.
+            if (
+                SHOW_PREVIEW
+                and IS_WIN
+                and AUTO_FIT_WIN_PREVIEW
+                and (not FORCE_PREVIEW_SIZE)
+                and (not _win_autofit_done)
+            ):
+                try:
+                    cv2.resizeWindow(WINDOW_NAME, int(w), int(h))
+                except Exception:
+                    pass
+                _win_autofit_done = True
+            # ----------------------------------------------------------------------
 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
@@ -442,6 +466,7 @@ try:
                         cap = new_cap
                         cam_index = next_idx
                         baseline_set = False
+                        _win_autofit_done = False  # re-fit window for the new camera mode
 
                         cfg["camera_index"] = cam_index
                         save_config(cfg)
