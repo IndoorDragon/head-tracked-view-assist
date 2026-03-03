@@ -38,7 +38,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Event: $GITHUB_EVENT_NAME"
           echo "Tag: ${{ inputs.tag }}"
           echo "Platform: ${{ inputs.platform }}"
           echo "Submission ID: ${{ inputs.submission_id }}"
@@ -49,7 +48,6 @@ jobs:
         run: |
           set -euo pipefail
           echo "$APPLE_NOTARY_KEY_P8_B64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
-          ls -la "$RUNNER_TEMP/AuthKey.p8"
         env:
           APPLE_NOTARY_KEY_P8_B64: ${{ secrets.APPLE_NOTARY_KEY_P8_B64 }}
 
@@ -66,10 +64,6 @@ jobs:
           MAX_MIN="${{ inputs.wait_timeout_minutes }}"
           MAX_SEC=$((MAX_MIN * 60))
           SLEEP_SEC=60
-
-          echo "Using python:"
-          command -v python3
-          python3 --version
 
           START_TS="$(date +%s)"
           echo "Polling notary status every ${SLEEP_SEC}s (max ${MAX_MIN} minutes)..."
@@ -102,6 +96,7 @@ jobs:
 
             echo "$OUT"
 
+            # Retry transient network issues
             if [ $STATUS -ne 0 ]; then
               if echo "$OUT" | grep -qiE "offline|NSURLErrorDomain|No network route|timed out|could not connect"; then
                 echo "Transient network error. Sleeping ${SLEEP_SEC}s..."
@@ -113,7 +108,34 @@ jobs:
             fi
 
             export OUT
-            NOTARY_STATUS="$(python3 -c 'import os, json; print(json.loads(os.environ["OUT"]).get("status",""))')"
+            NOTARY_STATUS="$(python3 - <<'PY'
+import os, json, re, sys
+
+s = os.environ.get("OUT","")
+
+# Extract first JSON object found in the output
+m = re.search(r'\{.*\}', s, flags=re.DOTALL)
+if not m:
+    # Not JSON yet — treat as transient
+    print("")
+    sys.exit(0)
+
+try:
+    j = json.loads(m.group(0))
+except Exception:
+    print("")
+    sys.exit(0)
+
+print(j.get("status",""))
+PY
+            )"
+
+            # If we couldn't parse JSON cleanly, don't hard-fail — just wait and retry
+            if [ -z "${NOTARY_STATUS:-}" ]; then
+              echo "Could not parse JSON status from notarytool output. Sleeping ${SLEEP_SEC}s..."
+              sleep "$SLEEP_SEC"
+              continue
+            fi
 
             if [ "$NOTARY_STATUS" = "Accepted" ]; then
               echo "Notarization Accepted."
@@ -144,6 +166,7 @@ jobs:
           TAG="${{ inputs.tag }}"
           PLATFORM="${{ inputs.platform }}"
           ZIP="head_tracked_view_assist_${TAG}_${PLATFORM}.zip"
+
           echo "Downloading release asset: $ZIP"
           gh release download "$TAG" --pattern "$ZIP" --clobber
           ls -la
@@ -163,8 +186,8 @@ jobs:
           APP_PATH="workdir/head_tracked_view_assist/tracker/tracker.app"
           if [ ! -d "$APP_PATH" ]; then
             echo "ERROR: tracker.app not found at: $APP_PATH"
-            echo "Listing tracker folder:"
-            ls -la workdir/head_tracked_view_assist/tracker || true
+            echo "Listing extracted tree (first 5 levels):"
+            find workdir -maxdepth 5 -print
             exit 1
           fi
 
