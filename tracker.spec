@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 from PyInstaller.utils.hooks import collect_all
+import sys
 
 block_cipher = None
 
@@ -44,6 +45,9 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# Safer defaults: avoid UPX on macOS (can complicate signing/notarization)
+UPX_OK = (sys.platform != "darwin")
+
 exe = EXE(
     pyz,
     a.scripts,
@@ -53,7 +57,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=UPX_OK,
     console=False,
 )
 
@@ -63,6 +67,19 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=UPX_OK,
     name="tracker",
 )
+
+# ✅ On macOS, wrap the collected output into a real .app bundle
+if sys.platform == "darwin":
+    app = BUNDLE(
+        coll,
+        name="tracker.app",
+        icon=None,  # optionally set an .icns here
+        bundle_identifier="com.indoordragon.tracker",  # keep stable
+        info_plist={
+            # Camera permission prompt (important for OpenCV capture)
+            "NSCameraUsageDescription": "Used to track head pose for Blender view assist.",
+        },
+    )
