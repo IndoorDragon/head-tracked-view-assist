@@ -59,6 +59,14 @@ Y_GAIN = float(os.environ.get("HTVA_Y_GAIN", "1.0"))
 Z_GAIN = float(os.environ.get("HTVA_Z_GAIN", "1.0"))
 SHOW_PREVIEW = os.environ.get("HTVA_SHOW_PREVIEW", "1") != "0"
 
+# Preview/camera debug options (safe defaults)
+FORCE_MJPG = os.environ.get("HTVA_FORCE_MJPG", "1") != "0"          # helps on many Linux webcams
+FORCE_PREVIEW_SIZE = os.environ.get("HTVA_FORCE_SIZE", "1") != "0"  # force a reasonable window + capture size
+PREVIEW_W = int(os.environ.get("HTVA_PREVIEW_W", "960"))
+PREVIEW_H = int(os.environ.get("HTVA_PREVIEW_H", "540"))
+CAPTURE_W = int(os.environ.get("HTVA_CAPTURE_W", "1280"))
+CAPTURE_H = int(os.environ.get("HTVA_CAPTURE_H", "720"))
+
 CAM_INDEX_ENV = os.environ.get("HTVA_CAM_INDEX", "").strip()
 CAM_INDEX = int(CAM_INDEX_ENV) if CAM_INDEX_ENV.isdigit() else None
 
@@ -85,13 +93,10 @@ if _backend_override in _BACKEND_MAP:
     BACKEND = _BACKEND_MAP[_backend_override]
 else:
     if sys.platform.startswith("win"):
-        # DSHOW is usually the most reliable for webcams on Windows in OpenCV
         BACKEND = getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY)
     elif sys.platform == "darwin":
-        # AVFoundation is the native backend on macOS
         BACKEND = getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY)
     else:
-        # Linux: V4L2 is the standard webcam backend
         BACKEND = getattr(cv2, "CAP_V4L2", cv2.CAP_ANY)
 
 
@@ -132,21 +137,43 @@ def remove_pid_file():
 # ----------------------------
 # Camera open helpers
 # ----------------------------
+def _configure_capture(cap: cv2.VideoCapture):
+    """
+    Apply camera settings that often fix black frames on Linux/V4L2 and
+    make the preview window behave consistently.
+    """
+    if FORCE_PREVIEW_SIZE:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(CAPTURE_W))
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(CAPTURE_H))
+
+    if FORCE_MJPG:
+        try:
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        except Exception:
+            pass
+
+    # Try to reduce latency a bit where supported (safe if ignored)
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    except Exception:
+        pass
+
+
 def try_open_cam(index: int):
     """
     Try to open a camera index with:
     1) chosen platform backend
     2) CAP_ANY fallback (lets OpenCV pick)
     """
-    # Try forced backend first
     cap = cv2.VideoCapture(index, BACKEND)
     if cap.isOpened():
+        _configure_capture(cap)
         return cap
     cap.release()
 
-    # Fallback to CAP_ANY
     cap = cv2.VideoCapture(index, cv2.CAP_ANY)
     if cap.isOpened():
+        _configure_capture(cap)
         return cap
     cap.release()
     return None
@@ -167,16 +194,19 @@ def open_camera_auto(preferred=None):
     if sys.platform.startswith("linux"):
         cap = cv2.VideoCapture("/dev/video0", BACKEND)
         if cap.isOpened():
+            _configure_capture(cap)
             return cap, 0
         cap.release()
 
         cap = cv2.VideoCapture("/dev/video0", cv2.CAP_ANY)
         if cap.isOpened():
+            _configure_capture(cap)
             return cap, 0
         cap.release()
 
     # Last resort
     cap = cv2.VideoCapture(0, cv2.CAP_ANY)
+    _configure_capture(cap)
     return cap, 0
 
 
@@ -266,6 +296,19 @@ save_config(cfg)
 # Write PID so Blender can fallback-kill if needed
 write_pid_file()
 
+# ----------------------------
+# Preview window setup (fixes tiny/black Qt HighGUI repaint issues)
+# ----------------------------
+WINDOW_NAME = "Head-Tracked View Assist — Tracker"
+if SHOW_PREVIEW:
+    try:
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+        if FORCE_PREVIEW_SIZE:
+            cv2.resizeWindow(WINDOW_NAME, PREVIEW_W, PREVIEW_H)
+    except Exception:
+        # If HighGUI backend doesn't like explicit window creation, ignore.
+        pass
+
 baseline_set = False
 base_x = base_y = base_size = 0.0
 
@@ -274,18 +317,43 @@ period = 1.0 / max(1.0, SEND_HZ)
 
 info_msg = f"Using camera {cam_index} (saved to {CONFIG_PATH.name})"
 
+# debug counters
+_read_fail_count = 0
+_black_frame_count = 0
+
 try:
     with FaceLandmarker.create_from_options(options) as landmarker:
         start_time = time.time()
 
         while True:
-            # Graceful quit check (from Blender Stop button)
             if check_quit_signal():
                 break
 
             ok, frame = cap.read()
-            if not ok:
+            if not ok or frame is None:
+                _read_fail_count += 1
+                # occasionally show a message in the window so it's obvious what's happening
+                if SHOW_PREVIEW and (_read_fail_count % 30 == 0):
+                    blank = (0 * (cv2.UMat(480, 640, cv2.CV_8UC3).get() if hasattr(cv2, "UMat") else None))
                 continue
+
+            _read_fail_count = 0
+
+            # Ensure uint8 BGR
+            if frame.dtype != "uint8":
+                frame = frame.astype("uint8", copy=False)
+
+            # Detect true "all black" frames (common V4L2 format issue)
+            try:
+                mn, mx = int(frame.min()), int(frame.max())
+                if mx == 0:
+                    _black_frame_count += 1
+                    if _black_frame_count % 30 == 0:
+                        info_msg = "Camera frames are black (try MJPG/size; see HTVA_FORCE_MJPG/HTVA_CAPTURE_W/H)"
+                else:
+                    _black_frame_count = 0
+            except Exception:
+                pass
 
             h, w = frame.shape[:2]
 
@@ -357,7 +425,10 @@ try:
             if SHOW_PREVIEW:
                 draw_hud(frame, cam_index, info_msg)
                 info_msg = ""
-                cv2.imshow("Head-Tracked View Assist — Tracker", frame)
+
+                # Make sure we're actually drawing something visible even if frames are black
+                # (helps diagnose: if the HUD text shows but video doesn't, it's capture-related)
+                cv2.imshow(WINDOW_NAME, frame)
 
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
