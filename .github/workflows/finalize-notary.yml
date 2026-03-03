@@ -38,18 +38,53 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "Tag: ${{ inputs.tag }}"
-          echo "Platform: ${{ inputs.platform }}"
-          echo "Submission ID: ${{ inputs.submission_id }}"
-          echo "Timeout minutes: ${{ inputs.wait_timeout_minutes }}"
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Repo:  $GITHUB_REPOSITORY"
+          echo "Tag:   ${{ inputs.tag }}"
+          echo "Plat:  ${{ inputs.platform }}"
+          echo "SubID: ${{ inputs.submission_id }}"
+          echo "Wait:  ${{ inputs.wait_timeout_minutes }} min"
+
+      - name: Debug GitHub CLI auth + release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${{ inputs.tag }}"
+          echo "gh version:"
+          gh --version
+          echo "gh auth status:"
+          gh auth status || true
+          echo "Release assets for $TAG:"
+          gh release view "$TAG" --json assets -q '.assets[].name'
 
       - name: Prepare Apple API key (p8)
         shell: bash
         run: |
           set -euo pipefail
           echo "$APPLE_NOTARY_KEY_P8_B64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          test -s "$RUNNER_TEMP/AuthKey.p8"
+          echo "AuthKey.p8 written."
         env:
           APPLE_NOTARY_KEY_P8_B64: ${{ secrets.APPLE_NOTARY_KEY_P8_B64 }}
+
+      - name: One-shot notary info (proves auth + submission id)
+        shell: bash
+        env:
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          SUB_ID="${{ inputs.submission_id }}"
+          echo "Querying notary status once..."
+          xcrun notarytool info "$SUB_ID" \
+            --issuer "$APPLE_NOTARY_ISSUER_ID" \
+            --key-id "$APPLE_NOTARY_KEY_ID" \
+            --key "$RUNNER_TEMP/AuthKey.p8" \
+            --team-id "$APPLE_TEAM_ID" \
+            --output-format json
 
       - name: Wait for notarization to finish (poll info)
         shell: bash
@@ -59,6 +94,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
+          trap 'echo "::error::FAILED at line $LINENO"; exit 1' ERR
 
           SUB_ID="${{ inputs.submission_id }}"
           MAX_MIN="${{ inputs.wait_timeout_minutes }}"
@@ -66,15 +102,13 @@ jobs:
           SLEEP_SEC=60
 
           START_TS="$(date +%s)"
-          echo "Polling notary status every ${SLEEP_SEC}s (max ${MAX_MIN} minutes)..."
+          echo "Polling every ${SLEEP_SEC}s (max ${MAX_MIN} min)..."
 
           while true; do
             NOW_TS="$(date +%s)"
             ELAPSED=$((NOW_TS - START_TS))
-
             if [ $ELAPSED -ge $MAX_SEC ]; then
-              echo "Timed out after ${ELAPSED}s."
-              echo "Last known info:"
+              echo "::error::Timed out after ${ELAPSED}s."
               xcrun notarytool info "$SUB_ID" \
                 --issuer "$APPLE_NOTARY_ISSUER_ID" \
                 --key-id "$APPLE_NOTARY_KEY_ID" \
@@ -84,67 +118,54 @@ jobs:
               exit 124
             fi
 
-            set +e
             OUT="$(xcrun notarytool info "$SUB_ID" \
               --issuer "$APPLE_NOTARY_ISSUER_ID" \
               --key-id "$APPLE_NOTARY_KEY_ID" \
               --key "$RUNNER_TEMP/AuthKey.p8" \
               --team-id "$APPLE_TEAM_ID" \
-              --output-format json 2>&1)"
-            STATUS=$?
-            set -e
+              --output-format json 2>&1)" || {
+                echo "$OUT"
+                if echo "$OUT" | grep -qiE "offline|NSURLErrorDomain|No network route|timed out|could not connect"; then
+                  echo "Transient network error, sleeping..."
+                  sleep "$SLEEP_SEC"
+                  continue
+                fi
+                echo "::error::notarytool info failed"
+                exit 1
+              }
 
             echo "$OUT"
 
-            # Retry transient network issues
-            if [ $STATUS -ne 0 ]; then
-              if echo "$OUT" | grep -qiE "offline|NSURLErrorDomain|No network route|timed out|could not connect"; then
-                echo "Transient network error. Sleeping ${SLEEP_SEC}s..."
-                sleep "$SLEEP_SEC"
-                continue
-              fi
-              echo "Non-network error while checking notary status."
-              exit $STATUS
-            fi
-
             export OUT
             NOTARY_STATUS="$(python3 - <<'PY'
-          import os, json, re, sys
-
+          import os, json, re
           s = os.environ.get("OUT","")
-
-          # Extract first JSON object found in the output
           m = re.search(r'\{.*\}', s, flags=re.DOTALL)
           if not m:
-              # Not JSON yet — treat as transient
               print("")
-              sys.exit(0)
-
-          try:
-              j = json.loads(m.group(0))
-          except Exception:
-              print("")
-              sys.exit(0)
-
-          print(j.get("status",""))
+          else:
+              try:
+                  j = json.loads(m.group(0))
+                  print(j.get("status",""))
+              except Exception:
+                  print("")
           PY
-                      )"
+            )"
 
-            # If we couldn't parse JSON cleanly, don't hard-fail — just wait and retry
             if [ -z "${NOTARY_STATUS:-}" ]; then
-              echo "Could not parse JSON status from notarytool output. Sleeping ${SLEEP_SEC}s..."
+              echo "Could not parse JSON; sleeping..."
               sleep "$SLEEP_SEC"
               continue
             fi
 
             if [ "$NOTARY_STATUS" = "Accepted" ]; then
-              echo "Notarization Accepted."
+              echo "Accepted."
               break
             fi
 
             if [ "$NOTARY_STATUS" = "Invalid" ] || [ "$NOTARY_STATUS" = "Rejected" ]; then
-              echo "Notarization finished with status: $NOTARY_STATUS"
-              echo "Fetching notary log:"
+              echo "::error::Notary status = $NOTARY_STATUS"
+              echo "Fetching notary log..."
               xcrun notarytool log "$SUB_ID" \
                 --issuer "$APPLE_NOTARY_ISSUER_ID" \
                 --key-id "$APPLE_NOTARY_KEY_ID" \
@@ -153,7 +174,7 @@ jobs:
               exit 1
             fi
 
-            echo "Still processing (status=$NOTARY_STATUS). Sleeping ${SLEEP_SEC}s..."
+            echo "Still processing (status=$NOTARY_STATUS). Sleeping..."
             sleep "$SLEEP_SEC"
           done
 
@@ -167,9 +188,9 @@ jobs:
           PLATFORM="${{ inputs.platform }}"
           ZIP="head_tracked_view_assist_${TAG}_${PLATFORM}.zip"
 
-          echo "Downloading release asset: $ZIP"
+          echo "Downloading: $ZIP"
           gh release download "$TAG" --pattern "$ZIP" --clobber
-          ls -la
+          ls -la "$ZIP"
 
       - name: Unzip, staple tracker.app, verify
         shell: bash
@@ -183,21 +204,19 @@ jobs:
           mkdir -p workdir
           unzip -q "$ZIP" -d workdir
 
+          echo "Tree (maxdepth 4):"
+          find workdir -maxdepth 4 -print
+
           APP_PATH="workdir/head_tracked_view_assist/tracker/tracker.app"
           if [ ! -d "$APP_PATH" ]; then
-            echo "ERROR: tracker.app not found at: $APP_PATH"
-            echo "Listing extracted tree (first 5 levels):"
-            find workdir -maxdepth 5 -print
+            echo "::error::tracker.app not found at: $APP_PATH"
             exit 1
           fi
 
-          echo "Stapling ticket to: $APP_PATH"
+          echo "Stapling: $APP_PATH"
           xcrun stapler staple "$APP_PATH"
 
-          echo "Gatekeeper assessment:"
           spctl --assess --type execute --verbose=4 "$APP_PATH" || true
-
-          echo "Codesign verification:"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
       - name: Re-zip and re-upload to the Release (overwrite)
@@ -210,21 +229,9 @@ jobs:
           PLATFORM="${{ inputs.platform }}"
           ZIP="head_tracked_view_assist_${TAG}_${PLATFORM}.zip"
 
-          echo "Repacking $ZIP..."
           rm -f "$ZIP"
           (cd workdir && zip -qr "../$ZIP" head_tracked_view_assist)
+          ls -la "$ZIP"
 
-          echo "Uploading (overwrite) to release $TAG..."
+          echo "Uploading (clobber) to release $TAG..."
           gh release upload "$TAG" "$ZIP" --clobber
-
-      - name: Summary
-        shell: bash
-        run: |
-          {
-            echo "## Finalize Notarization Complete"
-            echo ""
-            echo "- Tag: ${{ inputs.tag }}"
-            echo "- Platform: ${{ inputs.platform }}"
-            echo "- Submission ID: ${{ inputs.submission_id }}"
-            echo "- Action: Downloaded release zip, stapled tracker.app, re-uploaded zip (overwritten)."
-          } >> "$GITHUB_STEP_SUMMARY"
