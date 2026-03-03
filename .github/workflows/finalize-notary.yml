@@ -38,6 +38,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "Event: $GITHUB_EVENT_NAME"
           echo "Tag: ${{ inputs.tag }}"
           echo "Platform: ${{ inputs.platform }}"
           echo "Submission ID: ${{ inputs.submission_id }}"
@@ -48,11 +49,16 @@ jobs:
         run: |
           set -euo pipefail
           echo "$APPLE_NOTARY_KEY_P8_B64" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          ls -la "$RUNNER_TEMP/AuthKey.p8"
         env:
           APPLE_NOTARY_KEY_P8_B64: ${{ secrets.APPLE_NOTARY_KEY_P8_B64 }}
 
       - name: Wait for notarization to finish (poll info)
         shell: bash
+        env:
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
 
@@ -60,6 +66,10 @@ jobs:
           MAX_MIN="${{ inputs.wait_timeout_minutes }}"
           MAX_SEC=$((MAX_MIN * 60))
           SLEEP_SEC=60
+
+          echo "Using python:"
+          command -v python3
+          python3 --version
 
           START_TS="$(date +%s)"
           echo "Polling notary status every ${SLEEP_SEC}s (max ${MAX_MIN} minutes)..."
@@ -103,12 +113,7 @@ jobs:
             fi
 
             export OUT
-            NOTARY_STATUS="$(python - << 'PY'
-          import os, json
-          j = json.loads(os.environ["OUT"])
-          print(j.get("status",""))
-          PY
-            )"
+            NOTARY_STATUS="$(python3 -c 'import os, json; print(json.loads(os.environ["OUT"]).get("status",""))')"
 
             if [ "$NOTARY_STATUS" = "Accepted" ]; then
               echo "Notarization Accepted."
@@ -129,10 +134,6 @@ jobs:
             echo "Still processing (status=$NOTARY_STATUS). Sleeping ${SLEEP_SEC}s..."
             sleep "$SLEEP_SEC"
           done
-        env:
-          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
 
       - name: Download release ZIP asset for this platform
         shell: bash
@@ -140,11 +141,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
           TAG="${{ inputs.tag }}"
           PLATFORM="${{ inputs.platform }}"
           ZIP="head_tracked_view_assist_${TAG}_${PLATFORM}.zip"
-
           echo "Downloading release asset: $ZIP"
           gh release download "$TAG" --pattern "$ZIP" --clobber
           ls -la
@@ -153,7 +152,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           TAG="${{ inputs.tag }}"
           PLATFORM="${{ inputs.platform }}"
           ZIP="head_tracked_view_assist_${TAG}_${PLATFORM}.zip"
@@ -165,6 +163,7 @@ jobs:
           APP_PATH="workdir/head_tracked_view_assist/tracker/tracker.app"
           if [ ! -d "$APP_PATH" ]; then
             echo "ERROR: tracker.app not found at: $APP_PATH"
+            echo "Listing tracker folder:"
             ls -la workdir/head_tracked_view_assist/tracker || true
             exit 1
           fi
@@ -184,7 +183,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
           TAG="${{ inputs.tag }}"
           PLATFORM="${{ inputs.platform }}"
           ZIP="head_tracked_view_assist_${TAG}_${PLATFORM}.zip"
