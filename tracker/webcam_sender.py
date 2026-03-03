@@ -66,7 +66,7 @@ MAX_CAM_TRY = 6  # tries 0..5
 
 
 # ----------------------------
-# Capture defaults (platform-aware)
+# Platform flags
 # ----------------------------
 IS_WIN = sys.platform.startswith("win")
 IS_MAC = sys.platform == "darwin"
@@ -74,10 +74,6 @@ IS_LINUX = sys.platform.startswith("linux")
 
 
 def _env_bool(name: str, default: bool) -> bool:
-    """
-    Reads a boolean env var. If unset/unknown, returns default.
-    Accepts: 1/0, true/false, yes/no, on/off
-    """
     v = os.environ.get(name, "").strip().lower()
     if v in ("1", "true", "yes", "on"):
         return True
@@ -86,23 +82,24 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
-# Defaults tuned for speed/stability:
-# - Windows: keep small + don't force MJPG (often slows negotiation)
-# - Linux: force size + MJPG by default (often fixes black frames on V4L2)
-# - macOS: conservative, no MJPG forcing by default
+# Capture defaults tuned for stability/speed:
+# - Windows: keep smaller + don't force MJPG by default
+# - Linux: we will try multiple profiles automatically if frames are black
 DEFAULT_CAPTURE_W = 640 if IS_WIN else 1280 if IS_LINUX else 640
-DEFAULT_CAPTURE_H = 480 if IS_WIN else 720 if IS_LINUX else 480
-
-DEFAULT_FORCE_SIZE = True if IS_LINUX else False
-DEFAULT_FORCE_MJPG = True if IS_LINUX else False
+DEFAULT_CAPTURE_H = 480 if IS_WIN else 720  if IS_LINUX else 480
 
 CAPTURE_W = int(os.environ.get("HTVA_CAPTURE_W", str(DEFAULT_CAPTURE_W)))
 CAPTURE_H = int(os.environ.get("HTVA_CAPTURE_H", str(DEFAULT_CAPTURE_H)))
-FORCE_SIZE = _env_bool("HTVA_FORCE_SIZE", DEFAULT_FORCE_SIZE)
-FORCE_MJPG = _env_bool("HTVA_FORCE_MJPG", DEFAULT_FORCE_MJPG)
 
-# Optional low-latency hint (safe if ignored)
+# Manual override: if you set these, we respect them (and still can recover if black on Linux unless you disable recovery)
+FORCE_SIZE = _env_bool("HTVA_FORCE_SIZE", True if IS_LINUX else False)
+FORCE_MJPG = _env_bool("HTVA_FORCE_MJPG", True if IS_LINUX else False)
+
 LOW_LATENCY = _env_bool("HTVA_LOW_LATENCY", True)
+
+# Linux-only: auto-recover if the camera is returning black frames
+BLACK_RECOVERY = _env_bool("HTVA_BLACK_RECOVERY", True if IS_LINUX else False)
+BLACK_FRAMES_TRIGGER = int(os.environ.get("HTVA_BLACK_TRIGGER", "20"))  # consecutive black frames before retry
 
 
 # ----------------------------
@@ -125,13 +122,10 @@ if _backend_override in _BACKEND_MAP:
     BACKEND = _BACKEND_MAP[_backend_override]
 else:
     if IS_WIN:
-        # DSHOW is usually the most reliable for webcams on Windows in OpenCV
         BACKEND = getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY)
     elif IS_MAC:
-        # AVFoundation is the native backend on macOS
         BACKEND = getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY)
     else:
-        # Linux: V4L2 is the standard webcam backend
         BACKEND = getattr(cv2, "CAP_V4L2", cv2.CAP_ANY)
 
 
@@ -170,29 +164,23 @@ def remove_pid_file():
 
 
 # ----------------------------
-# Camera configuration + open helpers
+# Camera configuration
 # ----------------------------
-def configure_capture(cap: cv2.VideoCapture):
-    """
-    Apply platform-aware capture settings.
-
-    Linux/V4L2: forcing MJPG + size often fixes "black frames".
-    Windows: forcing MJPG/size can slow down startup, so defaults are conservative.
-    Env overrides:
-      HTVA_FORCE_SIZE=1/0
-      HTVA_FORCE_MJPG=1/0
-      HTVA_CAPTURE_W / HTVA_CAPTURE_H
-    """
+def _set_size(cap: cv2.VideoCapture):
     if FORCE_SIZE:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(CAPTURE_W))
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(CAPTURE_H))
 
+
+def _set_mjpg(cap: cv2.VideoCapture):
     if FORCE_MJPG:
         try:
             cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
         except Exception:
             pass
 
+
+def _set_low_latency(cap: cv2.VideoCapture):
     if LOW_LATENCY:
         try:
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -200,21 +188,96 @@ def configure_capture(cap: cv2.VideoCapture):
             pass
 
 
+def configure_capture_profile(cap: cv2.VideoCapture, profile: str):
+    """
+    Profiles mainly matter on Linux/V4L2:
+      - "mjpg_first": set FOURCC first, then size
+      - "size_first": set size first, then FOURCC
+      - "size_only": set size only
+      - "none": no forcing
+    """
+    if profile == "mjpg_first":
+        _set_mjpg(cap)
+        _set_size(cap)
+    elif profile == "size_first":
+        _set_size(cap)
+        _set_mjpg(cap)
+    elif profile == "size_only":
+        _set_size(cap)
+    elif profile == "none":
+        pass
+
+    _set_low_latency(cap)
+
+
+def is_frame_black(frame) -> bool:
+    # black frame is usually all zeros; allow tiny noise
+    try:
+        return int(frame.max()) <= 2
+    except Exception:
+        return False
+
+
+# ----------------------------
+# Camera open helpers
+# ----------------------------
+def open_with_profiles(index_or_path, backend, profiles):
+    """
+    Try opening camera and applying each profile. Return (cap, profile) or (None, None).
+    """
+    for prof in profiles:
+        cap = cv2.VideoCapture(index_or_path, backend)
+        if not cap.isOpened():
+            cap.release()
+            continue
+
+        configure_capture_profile(cap, prof)
+
+        # Warm up a few frames (some cameras need this after mode switch)
+        ok = False
+        frame = None
+        for _ in range(5):
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                break
+
+        if ok and frame is not None and not is_frame_black(frame):
+            return cap, prof
+
+        cap.release()
+
+    return None, None
+
+
 def try_open_cam(index: int):
     """
-    Try to open a camera index with:
-    1) chosen platform backend
-    2) CAP_ANY fallback (lets OpenCV pick)
+    Cross-platform open:
+      - Windows/macOS: just open + minimal forcing (based on FORCE_* env/defaults)
+      - Linux: try multiple profiles to avoid black frames
     """
+    if IS_LINUX:
+        profiles = ["mjpg_first", "size_first", "size_only", "none"]
+        # Respect FORCE_* flags by keeping profiles that can satisfy them;
+        # but even if FORCE_MJPG/FORCE_SIZE are False, the profiles still try safe fallbacks.
+        cap, prof = open_with_profiles(index, BACKEND, profiles)
+        if cap:
+            return cap
+
+        cap, prof = open_with_profiles(index, cv2.CAP_ANY, profiles)
+        if cap:
+            return cap
+        return None
+
+    # Non-Linux: simpler and faster
     cap = cv2.VideoCapture(index, BACKEND)
     if cap.isOpened():
-        configure_capture(cap)
+        configure_capture_profile(cap, "size_first")  # reasonable order
         return cap
     cap.release()
 
     cap = cv2.VideoCapture(index, cv2.CAP_ANY)
     if cap.isOpened():
-        configure_capture(cap)
+        configure_capture_profile(cap, "size_first")
         return cap
     cap.release()
     return None
@@ -233,21 +296,19 @@ def open_camera_auto(preferred=None):
 
     # Extra Linux fallback: try opening the device path directly
     if IS_LINUX:
-        cap = cv2.VideoCapture("/dev/video0", BACKEND)
-        if cap.isOpened():
-            configure_capture(cap)
-            return cap, 0
-        cap.release()
+        profiles = ["mjpg_first", "size_first", "size_only", "none"]
 
-        cap = cv2.VideoCapture("/dev/video0", cv2.CAP_ANY)
-        if cap.isOpened():
-            configure_capture(cap)
+        cap, _ = open_with_profiles("/dev/video0", BACKEND, profiles)
+        if cap:
             return cap, 0
-        cap.release()
 
-    # Last resort
+        cap, _ = open_with_profiles("/dev/video0", cv2.CAP_ANY, profiles)
+        if cap:
+            return cap, 0
+
     cap = cv2.VideoCapture(0, cv2.CAP_ANY)
-    configure_capture(cap)
+    if cap.isOpened():
+        configure_capture_profile(cap, "size_first")
     return cap, 0
 
 
@@ -345,18 +406,47 @@ period = 1.0 / max(1.0, SEND_HZ)
 
 info_msg = f"Using camera {cam_index} (saved to {CONFIG_PATH.name})"
 
+# Linux black-frame recovery state
+black_run = 0
+reopen_attempts = 0
+
 try:
     with FaceLandmarker.create_from_options(options) as landmarker:
         start_time = time.time()
 
         while True:
-            # Graceful quit check (from Blender Stop button)
             if check_quit_signal():
                 break
 
             ok, frame = cap.read()
             if not ok or frame is None:
                 continue
+
+            # If Linux is producing black frames again, re-open using the robust open logic.
+            if IS_LINUX and BLACK_RECOVERY:
+                if is_frame_black(frame):
+                    black_run += 1
+                else:
+                    black_run = 0
+
+                if black_run >= BLACK_FRAMES_TRIGGER:
+                    black_run = 0
+                    reopen_attempts += 1
+                    info_msg = f"Black frames detected → reopening camera (attempt {reopen_attempts})"
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                    cap, cam_index = open_camera_auto(cam_index)
+                    if not cap.isOpened():
+                        # fall back to index 0
+                        cap, cam_index = open_camera_auto(0)
+
+                    cfg["camera_index"] = cam_index
+                    save_config(cfg)
+                    baseline_set = False
+                    # try next loop after reopening
+                    continue
 
             h, w = frame.shape[:2]
 
