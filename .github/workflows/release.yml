@@ -94,7 +94,7 @@ jobs:
           echo "dist/tracker.app listing (if present):"
           ls -la dist/tracker.app || true
 
-      # ---------------- macOS SIGN + NOTARIZE (macOS only) ----------------
+      # ---------------- macOS SIGN + NOTARIZE (ASYNC) ----------------
 
       - name: Import signing certificate (macOS)
         if: runner.os == 'macOS'
@@ -149,7 +149,7 @@ jobs:
         env:
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
 
-      - name: Notarize + Staple tracker.app (macOS)
+      - name: Submit to Apple notarization (async, macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
@@ -161,7 +161,7 @@ jobs:
           echo "Creating notarization ZIP..."
           ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/tracker-notary.zip"
 
-          echo "Submitting to Apple notarization (get Submission ID immediately)..."
+          echo "Submitting to Apple notarization (NO WAIT)..."
           SUB_ID="$(
             xcrun notarytool submit "$RUNNER_TEMP/tracker-notary.zip" \
               --issuer "$APPLE_NOTARY_ISSUER_ID" \
@@ -174,48 +174,35 @@ jobs:
 
           echo "Notary Submission ID: $SUB_ID"
 
-          echo "Waiting for notarization to complete (timeout 120m)..."
-          set +e
-          xcrun notarytool wait "$SUB_ID" \
-            --issuer "$APPLE_NOTARY_ISSUER_ID" \
-            --key-id "$APPLE_NOTARY_KEY_ID" \
-            --key "$RUNNER_TEMP/AuthKey.p8" \
-            --team-id "$APPLE_TEAM_ID" \
-            --timeout 120m
-          STATUS=$?
-          set -e
+          # Save for later finalization
+          mkdir -p notary_out
+          {
+            echo "tag=${GITHUB_REF_NAME}"
+            echo "platform=${PLATFORM_SUFFIX}"
+            echo "submission_id=${SUB_ID}"
+          } > "notary_out/notary-${PLATFORM_SUFFIX}.txt"
 
-          if [ $STATUS -ne 0 ]; then
-            echo "Notarization did not complete successfully (exit $STATUS)."
-
-            echo "Current status (info):"
-            xcrun notarytool info "$SUB_ID" \
-              --issuer "$APPLE_NOTARY_ISSUER_ID" \
-              --key-id "$APPLE_NOTARY_KEY_ID" \
-              --key "$RUNNER_TEMP/AuthKey.p8" \
-              --team-id "$APPLE_TEAM_ID" \
-              --output-format json || true
-
-            echo "Attempting to fetch notary log (may not exist until processing completes)..."
-            xcrun notarytool log "$SUB_ID" \
-              --issuer "$APPLE_NOTARY_ISSUER_ID" \
-              --key-id "$APPLE_NOTARY_KEY_ID" \
-              --key "$RUNNER_TEMP/AuthKey.p8" \
-              --team-id "$APPLE_TEAM_ID" || true
-
-            exit $STATUS
-          fi
-
-          echo "Stapling ticket to app..."
-          xcrun stapler staple "$APP"
-
-          echo "Final Gatekeeper assessment:"
-          spctl --assess --type execute --verbose=4 "$APP" || true
+          # Also write to the GitHub job summary for easy copy/paste
+          {
+            echo "## Apple Notary Submission"
+            echo ""
+            echo "- Tag: \`${GITHUB_REF_NAME}\`"
+            echo "- Platform: \`${PLATFORM_SUFFIX}\`"
+            echo "- Submission ID: \`${SUB_ID}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
         env:
+          PLATFORM_SUFFIX: ${{ matrix.artifact_suffix }}
           APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
           APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
           APPLE_NOTARY_KEY_P8_B64: ${{ secrets.APPLE_NOTARY_KEY_P8_B64 }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+      - name: Upload notarization submission info (macOS)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: notary-submission-${{ matrix.artifact_suffix }}
+          path: notary_out/notary-${{ matrix.artifact_suffix }}.txt
 
       # ---------------- Package Blender add-on zip ----------------
 
