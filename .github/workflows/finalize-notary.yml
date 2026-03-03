@@ -176,7 +176,7 @@ jobs:
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ZIP" --clobber
           ls -la "$ZIP"
 
-      - name: Unzip, staple tracker.app, verify
+      - name: Unzip (ditto), staple tracker.app, verify
         shell: bash
         run: |
           set -euo pipefail
@@ -186,7 +186,9 @@ jobs:
 
           rm -rf workdir
           mkdir -p workdir
-          unzip -q "$ZIP" -d workdir
+
+          # IMPORTANT: preserve symlinks/resource forks inside .app bundles
+          ditto -x -k "$ZIP" workdir
 
           APP_PATH="workdir/head_tracked_view_assist/tracker/tracker.app"
           if [ ! -d "$APP_PATH" ]; then
@@ -195,11 +197,16 @@ jobs:
             exit 1
           fi
 
+          echo "Stapling ticket to: $APP_PATH"
           xcrun stapler staple "$APP_PATH"
+
+          echo "Gatekeeper assessment:"
           spctl --assess --type execute --verbose=4 "$APP_PATH" || true
+
+          echo "Codesign verification:"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 
-      - name: Re-zip and re-upload to the Release (overwrite)
+      - name: Re-zip (ditto) and re-upload to the Release (overwrite)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -210,6 +217,12 @@ jobs:
           ZIP="head_tracked_view_assist_${TAG}_${PLATFORM}.zip"
 
           rm -f "$ZIP"
-          (cd workdir && zip -qr "../$ZIP" head_tracked_view_assist)
+
+          # IMPORTANT: ditto preserves .app bundle structure better than zip
+          ditto -c -k --sequesterRsrc --keepParent \
+            "workdir/head_tracked_view_assist" \
+            "$ZIP"
+
+          ls -la "$ZIP"
 
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" "$ZIP" --clobber
