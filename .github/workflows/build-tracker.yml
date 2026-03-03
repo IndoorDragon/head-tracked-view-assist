@@ -1,9 +1,9 @@
 name: Build tracker (Win/Mac/Linux)
 
 on:
+  workflow_dispatch:
   release:
     types: [published]
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -19,24 +19,28 @@ jobs:
             asset_os: Windows
             asset_arch: x86_64
             python: "3.11"
+            mediapipe_version: "0.10.32"
 
           # Linux
           - os: ubuntu-latest
             asset_os: Linux
             asset_arch: x86_64
             python: "3.11"
+            mediapipe_version: "0.10.32"
 
           # macOS Apple Silicon
           - os: macos-14
             asset_os: macOS
             asset_arch: arm64
             python: "3.11"
+            mediapipe_version: "0.10.32"
 
           # macOS Intel
           - os: macos-15-intel
             asset_os: macOS
             asset_arch: x86_64
             python: "3.10"
+            mediapipe_version: "0.10.21"
 
     runs-on: ${{ matrix.os }}
 
@@ -78,25 +82,18 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel | tee ci_logs/pip-upgrade.log
 
-      - name: Pip debug (very helpful on macOS Intel)
+      - name: Pip debug
         shell: bash
         run: |
           python -m pip debug --verbose | tee ci_logs/pip-debug.log
 
       # ---------------- Dependencies ----------------
-
-      - name: Install dependencies (normal)
-        if: runner.os != 'macOS' || matrix.asset_arch != 'x86_64'
+      # Install requirements EXCEPT mediapipe, then install mediapipe per-platform/version
+      - name: Install deps (requirements without mediapipe) + mediapipe (matrix)
         shell: bash
         run: |
-          python -m pip install -r requirements.txt | tee ci_logs/pip-install.log
-
-      - name: Install dependencies (macOS Intel workaround)
-        if: runner.os == 'macOS' && matrix.asset_arch == 'x86_64'
-        shell: bash
-        run: |
-          set -e
-          echo "macOS Intel: installing all requirements EXCEPT mediapipe, then installing mediapipe explicitly." | tee ci_logs/pip-install.log
+          set -euo pipefail
+          echo "Installing requirements (excluding mediapipe) + mediapipe==${{ matrix.mediapipe_version }}" | tee ci_logs/pip-install.log
 
           python - << 'PY'
           from pathlib import Path
@@ -108,17 +105,14 @@ jobs:
                   out.append(line)
                   continue
               if s.lower().startswith("mediapipe"):
-                  print("Skipping:", line)
+                  print("Stripping:", line)
                   continue
               out.append(line)
           Path("requirements.no_mediapipe.txt").write_text("\n".join(out) + "\n", encoding="utf-8")
           PY
 
           python -m pip install -r requirements.no_mediapipe.txt 2>&1 | tee -a ci_logs/pip-install.log
-
-          # IMPORTANT FIX:
-          # Latest mediapipe available for macOS Intel x86_64 is 0.10.21
-          python -m pip install "mediapipe==0.10.21" 2>&1 | tee -a ci_logs/pip-install.log
+          python -m pip install "mediapipe==${{ matrix.mediapipe_version }}" 2>&1 | tee -a ci_logs/pip-install.log
 
       - name: Debug — show installed packages
         shell: bash
@@ -133,6 +127,16 @@ jobs:
         run: |
           python -m PyInstaller --noconfirm --clean tracker.spec 2>&1 | tee ci_logs/pyinstaller.log
 
+      - name: Debug — show dist outputs
+        shell: bash
+        run: |
+          echo "dist listing:"
+          ls -la dist || true
+          echo "dist/tracker listing:"
+          ls -la dist/tracker || true
+          echo "dist/tracker.app listing:"
+          ls -la dist/tracker.app || true
+
       # ---------------- Packaging ----------------
 
       - name: Create archive (Windows)
@@ -141,12 +145,24 @@ jobs:
         run: |
           Compress-Archive -Path dist\tracker\* -DestinationPath tracker-windows.zip
 
-      - name: Create archive (macOS/Linux)
-        if: runner.os != 'Windows'
+      - name: Create archive (Linux)
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           cd dist
           tar -czf "../tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz" tracker
+
+      - name: Create archive (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          cd dist
+          if [ -d "tracker.app" ]; then
+            tar -czf "../tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz" tracker.app
+          else
+            # fallback (in case spec changes)
+            tar -czf "../tracker-${{ matrix.asset_os }}-${{ matrix.asset_arch }}.tar.gz" tracker
+          fi
 
       # ---------------- Upload build artifacts ----------------
 
@@ -174,7 +190,6 @@ jobs:
           path: ci_logs
 
       # ---------------- Upload to GitHub Release (ONLY on release) ----------------
-
       - name: Upload release assets (Windows)
         if: runner.os == 'Windows' && github.event_name == 'release'
         uses: softprops/action-gh-release@v2

@@ -21,6 +21,14 @@ def get_app_dir() -> Path:
 
 
 # ----------------------------
+# Platform flags
+# ----------------------------
+IS_WIN = sys.platform.startswith("win")
+IS_MAC = sys.platform == "darwin"
+IS_LINUX = sys.platform.startswith("linux")
+
+
+# ----------------------------
 # Networking
 # ----------------------------
 UDP_IP = os.environ.get("HTVA_UDP_IP", "127.0.0.1")
@@ -59,6 +67,28 @@ Y_GAIN = float(os.environ.get("HTVA_Y_GAIN", "1.0"))
 Z_GAIN = float(os.environ.get("HTVA_Z_GAIN", "1.0"))
 SHOW_PREVIEW = os.environ.get("HTVA_SHOW_PREVIEW", "1") != "0"
 
+# Preview/camera defaults:
+# - Linux: aggressive defaults to prevent black frames (MJPG + set size + resize preview)
+# - Windows/macOS: conservative defaults for fast startup + less CPU
+_default_force_mjpg = "1" if IS_LINUX else "0"
+_default_force_size = "1" if IS_LINUX else "0"
+
+# Capture defaults per-OS
+_default_capture_w = "1280" if IS_LINUX else "640"
+_default_capture_h = "720"  if IS_LINUX else "480"
+
+# Preview window defaults per-OS
+_default_preview_w = "960" if IS_LINUX else "640"
+_default_preview_h = "540" if IS_LINUX else "480"
+
+FORCE_MJPG = os.environ.get("HTVA_FORCE_MJPG", _default_force_mjpg) != "0"
+FORCE_PREVIEW_SIZE = os.environ.get("HTVA_FORCE_SIZE", _default_force_size) != "0"
+
+PREVIEW_W = int(os.environ.get("HTVA_PREVIEW_W", _default_preview_w))
+PREVIEW_H = int(os.environ.get("HTVA_PREVIEW_H", _default_preview_h))
+CAPTURE_W = int(os.environ.get("HTVA_CAPTURE_W", _default_capture_w))
+CAPTURE_H = int(os.environ.get("HTVA_CAPTURE_H", _default_capture_h))
+
 CAM_INDEX_ENV = os.environ.get("HTVA_CAM_INDEX", "").strip()
 CAM_INDEX = int(CAM_INDEX_ENV) if CAM_INDEX_ENV.isdigit() else None
 
@@ -84,14 +114,11 @@ _BACKEND_MAP = {
 if _backend_override in _BACKEND_MAP:
     BACKEND = _BACKEND_MAP[_backend_override]
 else:
-    if sys.platform.startswith("win"):
-        # DSHOW is usually the most reliable for webcams on Windows in OpenCV
+    if IS_WIN:
         BACKEND = getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY)
-    elif sys.platform == "darwin":
-        # AVFoundation is the native backend on macOS
+    elif IS_MAC:
         BACKEND = getattr(cv2, "CAP_AVFOUNDATION", cv2.CAP_ANY)
     else:
-        # Linux: V4L2 is the standard webcam backend
         BACKEND = getattr(cv2, "CAP_V4L2", cv2.CAP_ANY)
 
 
@@ -132,21 +159,47 @@ def remove_pid_file():
 # ----------------------------
 # Camera open helpers
 # ----------------------------
+def _configure_capture(cap: cv2.VideoCapture):
+    """
+    Apply camera settings.
+
+    IMPORTANT:
+    - On Linux/V4L2, forcing size + MJPG often fixes black frames.
+    - On Windows, forcing MJPG/size can slow camera negotiation, so defaults are OFF there.
+      (But you can still force it via env vars if needed.)
+    """
+    if FORCE_PREVIEW_SIZE:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(CAPTURE_W))
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(CAPTURE_H))
+
+    if FORCE_MJPG:
+        try:
+            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        except Exception:
+            pass
+
+    # Try to reduce latency a bit where supported (safe if ignored)
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    except Exception:
+        pass
+
+
 def try_open_cam(index: int):
     """
     Try to open a camera index with:
     1) chosen platform backend
     2) CAP_ANY fallback (lets OpenCV pick)
     """
-    # Try forced backend first
     cap = cv2.VideoCapture(index, BACKEND)
     if cap.isOpened():
+        _configure_capture(cap)
         return cap
     cap.release()
 
-    # Fallback to CAP_ANY
     cap = cv2.VideoCapture(index, cv2.CAP_ANY)
     if cap.isOpened():
+        _configure_capture(cap)
         return cap
     cap.release()
     return None
@@ -164,19 +217,22 @@ def open_camera_auto(preferred=None):
             return cap, idx
 
     # Extra Linux fallback: try opening the device path directly
-    if sys.platform.startswith("linux"):
+    if IS_LINUX:
         cap = cv2.VideoCapture("/dev/video0", BACKEND)
         if cap.isOpened():
+            _configure_capture(cap)
             return cap, 0
         cap.release()
 
         cap = cv2.VideoCapture("/dev/video0", cv2.CAP_ANY)
         if cap.isOpened():
+            _configure_capture(cap)
             return cap, 0
         cap.release()
 
     # Last resort
     cap = cv2.VideoCapture(0, cv2.CAP_ANY)
+    _configure_capture(cap)
     return cap, 0
 
 
@@ -266,6 +322,18 @@ save_config(cfg)
 # Write PID so Blender can fallback-kill if needed
 write_pid_file()
 
+# ----------------------------
+# Preview window setup
+# ----------------------------
+WINDOW_NAME = "Head-Tracked View Assist — Tracker"
+if SHOW_PREVIEW:
+    try:
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+        if FORCE_PREVIEW_SIZE:
+            cv2.resizeWindow(WINDOW_NAME, PREVIEW_W, PREVIEW_H)
+    except Exception:
+        pass
+
 baseline_set = False
 base_x = base_y = base_size = 0.0
 
@@ -279,12 +347,11 @@ try:
         start_time = time.time()
 
         while True:
-            # Graceful quit check (from Blender Stop button)
             if check_quit_signal():
                 break
 
             ok, frame = cap.read()
-            if not ok:
+            if not ok or frame is None:
                 continue
 
             h, w = frame.shape[:2]
@@ -357,7 +424,7 @@ try:
             if SHOW_PREVIEW:
                 draw_hud(frame, cam_index, info_msg)
                 info_msg = ""
-                cv2.imshow("Head-Tracked View Assist — Tracker", frame)
+                cv2.imshow(WINDOW_NAME, frame)
 
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
