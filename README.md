@@ -116,7 +116,7 @@ No external network access is required.
 
 • Linux: Tracker window may appear black, but tracking functions normally.
 
-• macOS (Intel & Apple Silicon): Tracker does not auto-launch from Blender menu.  Workaround: Manually run the tracker executable inside the add-on folder.
+• macOS (Intel & Apple Silicon): Tracker does not auto-launch from Blender menu.  Workaround: Manually run the tracker executable inside the add-on folder using terminal.
 
 Fixes are planned for v0.1.5.
 
