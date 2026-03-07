@@ -317,9 +317,17 @@ cfg_cam = cfg.get("camera_index", None)
 cfg_cam = int(cfg_cam) if isinstance(cfg_cam, int) or (isinstance(cfg_cam, str) and str(cfg_cam).isdigit()) else None
 preferred_cam = CAM_INDEX if CAM_INDEX is not None else cfg_cam
 
-cap, cam_index = open_camera_auto(preferred_cam)
-if not cap.isOpened():
-    raise RuntimeError("Could not open any webcam (tried indices 0..5). Close other apps using the camera.")
+VIDEO_FILE = HERE / "test.mp4"
+
+if VIDEO_FILE.exists():
+    cap = cv2.VideoCapture(str(VIDEO_FILE))
+    cam_index = -1
+else:
+    cap, cam_index = open_camera_auto(preferred_cam)
+    if not cap.isOpened():
+        raise RuntimeError(
+            f"Could not open any webcam and fallback video was not found: {VIDEO_FILE}"
+        )
 
 cfg["camera_index"] = cam_index
 save_config(cfg)
