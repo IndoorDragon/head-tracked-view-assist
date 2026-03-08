@@ -46,17 +46,63 @@ HERE = get_app_dir()
 CONFIG_PATH = HERE / "config.json"
 PID_PATH = HERE / "tracker_pid.txt"
 
+
+def find_existing_path(candidates):
+    for p in candidates:
+        try:
+            if p.exists():
+                return p
+        except Exception:
+            pass
+    return None
+
+
+def get_bundle_outer_dir() -> Path | None:
+    """
+    When running inside:
+      tracker.app/Contents/MacOS/tracker
+    return the folder containing tracker.app:
+      .../tracker
+    Otherwise return None.
+    """
+    try:
+        p = HERE
+        # Expect .../tracker.app/Contents/MacOS
+        if p.name == "MacOS" and p.parent.name == "Contents" and p.parent.parent.suffix == ".app":
+            return p.parent.parent.parent
+    except Exception:
+        pass
+    return None
+
+
+BUNDLE_OUTER_DIR = get_bundle_outer_dir()
+
 # Model lookup order:
 # 1) explicit env override
-# 2) alongside tracker binary
-# 3) PyInstaller one-folder internal dir (dist/tracker/_internal/...)
+# 2) alongside tracker binary / script
+# 3) PyInstaller one-folder internal dir
+# 4) next to tracker.app (macOS add-on layout)
+# 5) common macOS bundle resource locations
 _env_model = os.environ.get("HTVA_MODEL_PATH", "").strip()
 if _env_model:
     MODEL_PATH = Path(_env_model)
 else:
-    candidate_1 = HERE / "face_landmarker.task"
-    candidate_2 = HERE / "_internal" / "face_landmarker.task"
-    MODEL_PATH = candidate_1 if candidate_1.exists() else candidate_2
+    model_candidates = [
+        HERE / "face_landmarker.task",
+        HERE / "_internal" / "face_landmarker.task",
+    ]
+
+    if BUNDLE_OUTER_DIR is not None:
+        model_candidates.extend([
+            BUNDLE_OUTER_DIR / "face_landmarker.task",
+            HERE.parent / "Resources" / "face_landmarker.task",
+            HERE.parent / "Frameworks" / "face_landmarker.task",
+        ])
+
+    MODEL_PATH = find_existing_path(model_candidates)
+    if MODEL_PATH is None:
+        # Keep a deterministic fallback path for error reporting
+        MODEL_PATH = HERE / "_internal" / "face_landmarker.task"
 
 
 # ----------------------------
@@ -242,9 +288,10 @@ def open_camera_auto(preferred=None):
 
 
 def draw_hud(frame, cam_idx, msg_line):
+    source_label = "video file" if cam_idx == -1 else f"camera index: {cam_idx}"
     cv2.putText(
         frame,
-        f"Camera index: {cam_idx}   (N=next, P=prev, R=recenter, Q=quit)",
+        f"Source: {source_label}   (N=next, P=prev, R=recenter, Q=quit)",
         (10, 25),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.6,
@@ -288,12 +335,24 @@ def check_quit_signal() -> bool:
 # MediaPipe setup
 # ----------------------------
 if not MODEL_PATH.exists():
+    tried_lines = [
+        str(HERE / "face_landmarker.task"),
+        str(HERE / "_internal" / "face_landmarker.task"),
+    ]
+    if BUNDLE_OUTER_DIR is not None:
+        tried_lines.extend([
+            str(BUNDLE_OUTER_DIR / "face_landmarker.task"),
+            str(HERE.parent / "Resources" / "face_landmarker.task"),
+            str(HERE.parent / "Frameworks" / "face_landmarker.task"),
+        ])
+
+    tried_msg = "\n".join(f"  - {p}" for p in tried_lines)
+
     raise FileNotFoundError(
         f"Model file not found: {MODEL_PATH}\n"
         f"Option A requires face_landmarker.task to ship with the app.\n"
         f"Tried:\n"
-        f"  - {HERE / 'face_landmarker.task'}\n"
-        f"  - {HERE / '_internal' / 'face_landmarker.task'}\n"
+        f"{tried_msg}\n"
         f"Or set HTVA_MODEL_PATH to an absolute path."
     )
 
@@ -310,23 +369,40 @@ options = FaceLandmarkerOptions(
 
 
 # ----------------------------
-# Choose preferred camera
+# Choose preferred camera / fallback video
 # ----------------------------
 cfg = load_config()
 cfg_cam = cfg.get("camera_index", None)
 cfg_cam = int(cfg_cam) if isinstance(cfg_cam, int) or (isinstance(cfg_cam, str) and str(cfg_cam).isdigit()) else None
 preferred_cam = CAM_INDEX if CAM_INDEX is not None else cfg_cam
 
-VIDEO_FILE = HERE / "test.mp4"
+video_candidates = [
+    HERE / "test.mp4",
+]
 
-if VIDEO_FILE.exists():
+if BUNDLE_OUTER_DIR is not None:
+    video_candidates.extend([
+        BUNDLE_OUTER_DIR / "test.mp4",
+        HERE.parent / "Resources" / "test.mp4",
+    ])
+
+VIDEO_FILE = find_existing_path(video_candidates)
+
+using_video_file = False
+
+if VIDEO_FILE is not None:
     cap = cv2.VideoCapture(str(VIDEO_FILE))
+    if not cap.isOpened():
+        raise RuntimeError(f"Found fallback video but could not open it: {VIDEO_FILE}")
     cam_index = -1
+    using_video_file = True
 else:
     cap, cam_index = open_camera_auto(preferred_cam)
     if not cap.isOpened():
+        searched = "\n".join(f"  - {p}" for p in video_candidates)
         raise RuntimeError(
-            f"Could not open any webcam and fallback video was not found: {VIDEO_FILE}"
+            "Could not open any webcam and fallback video was not found.\n"
+            f"Searched for test.mp4 in:\n{searched}"
         )
 
 cfg["camera_index"] = cam_index
@@ -356,7 +432,10 @@ base_x = base_y = base_size = 0.0
 last_send = 0.0
 period = 1.0 / max(1.0, SEND_HZ)
 
-info_msg = f"Using camera {cam_index} (saved to {CONFIG_PATH.name})"
+if using_video_file:
+    info_msg = f"Using fallback video: {VIDEO_FILE.name}"
+else:
+    info_msg = f"Using camera {cam_index} (saved to {CONFIG_PATH.name})"
 
 try:
     with FaceLandmarker.create_from_options(options) as landmarker:
@@ -367,6 +446,15 @@ try:
                 break
 
             ok, frame = cap.read()
+
+            # Loop video files automatically
+            if (not ok or frame is None) and using_video_file:
+                try:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                except Exception:
+                    pass
+                ok, frame = cap.read()
+
             if not ok or frame is None:
                 continue
 
@@ -464,7 +552,7 @@ try:
                 elif key == ord("r"):
                     baseline_set = False
                     info_msg = "Recentered baseline"
-                elif key in (ord("n"), ord("p")):
+                elif key in (ord("n"), ord("p")) and not using_video_file:
                     step = 1 if key == ord("n") else -1
                     next_idx = (cam_index + step) % MAX_CAM_TRY
 
