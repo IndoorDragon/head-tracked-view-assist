@@ -283,7 +283,8 @@ def open_camera_auto(preferred=None):
 
     # Last resort
     cap = cv2.VideoCapture(0, cv2.CAP_ANY)
-    _configure_capture(cap)
+    if cap.isOpened():
+        _configure_capture(cap)
     return cap, 0
 
 
@@ -390,15 +391,25 @@ VIDEO_FILE = find_existing_path(video_candidates)
 
 using_video_file = False
 
-if VIDEO_FILE is not None:
-    cap = cv2.VideoCapture(str(VIDEO_FILE))
-    if not cap.isOpened():
-        raise RuntimeError(f"Found fallback video but could not open it: {VIDEO_FILE}")
-    cam_index = -1
-    using_video_file = True
+# Try real webcam first
+cap, cam_index = open_camera_auto(preferred_cam)
+
+if cap.isOpened():
+    using_video_file = False
 else:
-    cap, cam_index = open_camera_auto(preferred_cam)
-    if not cap.isOpened():
+    try:
+        cap.release()
+    except Exception:
+        pass
+
+    # Fall back to test.mp4 only if no webcam could be opened
+    if VIDEO_FILE is not None:
+        cap = cv2.VideoCapture(str(VIDEO_FILE))
+        if not cap.isOpened():
+            raise RuntimeError(f"Found fallback video but could not open it: {VIDEO_FILE}")
+        cam_index = -1
+        using_video_file = True
+    else:
         searched = "\n".join(f"  - {p}" for p in video_candidates)
         raise RuntimeError(
             "Could not open any webcam and fallback video was not found.\n"
