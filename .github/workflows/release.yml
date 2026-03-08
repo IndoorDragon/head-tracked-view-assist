@@ -94,6 +94,40 @@ jobs:
           echo "dist/tracker.app listing (if present):"
           ls -la dist/tracker.app || true
 
+      - name: Bundle tracker resources into tracker.app (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          APP="dist/tracker.app"
+          RES_DIR="$APP/Contents/Resources"
+
+          if [ ! -d "$APP" ]; then
+            echo "ERROR: Expected $APP to exist. Your spec may not be producing a .app."
+            ls -la dist || true
+            exit 1
+          fi
+
+          mkdir -p "$RES_DIR"
+
+          # Required MediaPipe model inside the app bundle
+          if [ ! -f "tracker/face_landmarker.task" ]; then
+            echo "ERROR: Missing tracker/face_landmarker.task in repo"
+            exit 1
+          fi
+          cp -f "tracker/face_landmarker.task" "$RES_DIR/face_landmarker.task"
+
+          # Required fallback video inside the app bundle
+          if [ ! -f "tracker/test.mp4" ]; then
+            echo "ERROR: Missing tracker/test.mp4 in repo"
+            exit 1
+          fi
+          cp -f "tracker/test.mp4" "$RES_DIR/test.mp4"
+
+          echo "Bundled app resources:"
+          ls -la "$RES_DIR"
+
       # ---------------- macOS SIGN + NOTARIZE (ASYNC) ----------------
 
       - name: Import signing certificate (macOS)
@@ -207,10 +241,12 @@ jobs:
         shell: bash
         run: |
           python - << 'PY'
-          import os, shutil
+          import shutil
+          import platform
           from pathlib import Path
 
           addon_root_name = "head_tracked_view_assist"
+          is_macos = platform.system() == "Darwin"
 
           repo = Path(".").resolve()
           stage = repo / "release_stage"
@@ -225,7 +261,7 @@ jobs:
           addon_root.mkdir(parents=True, exist_ok=True)
 
           # 1) Copy add-on .py files
-          addon_py = ["__init__.py","operators.py","prefs.py","props.py","ui.py","utils.py"]
+          addon_py = ["__init__.py", "operators.py", "prefs.py", "props.py", "ui.py", "utils.py"]
           for fn in addon_py:
               src = repo / fn
               if not src.exists():
@@ -272,10 +308,19 @@ jobs:
                   else:
                       shutil.copy2(item, dst)
 
-          # 3) Include model file if present in repo/tracker/
+          # 3) Include required model + fallback video next to runtime for non-macOS builds only.
+          # macOS build already embeds them inside tracker.app/Contents/Resources.
           maybe_task = repo / "tracker" / "face_landmarker.task"
-          if maybe_task.exists():
+          if not maybe_task.exists():
+              raise FileNotFoundError("Missing required file: tracker/face_landmarker.task")
+          if not is_macos:
               shutil.copy2(maybe_task, tracker_dst / maybe_task.name)
+
+          maybe_test_video = repo / "tracker" / "test.mp4"
+          if not maybe_test_video.exists():
+              raise FileNotFoundError("Missing required file: tracker/test.mp4")
+          if not is_macos:
+              shutil.copy2(maybe_test_video, tracker_dst / maybe_test_video.name)
 
           # Helpful debug manifest
           manifest = repo / "release_out" / "zip_manifest.txt"
@@ -312,7 +357,8 @@ jobs:
         shell: bash
         run: |
           python - << 'PY'
-          import os, zipfile
+          import os
+          import zipfile
           from pathlib import Path
 
           tag = os.environ.get("GITHUB_REF_NAME", "untagged")
