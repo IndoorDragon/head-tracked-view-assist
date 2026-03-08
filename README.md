@@ -3,14 +3,19 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Blender](https://img.shields.io/badge/Blender-4.x-orange)
 ![Platform](https://img.shields.io/badge/Platform-Windows-blue)
+![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey)
+![Platform](https://img.shields.io/badge/Platform-macOS-black)
 
 Head-Tracked View Assist is a Blender add-on that enables hands-free viewport navigation using real-time head tracking from a standard webcam.
 
-### Demo
-![Head-Tracked View Assist Demo](assets/viewassistgif.gif)
+### Depth Perspective Demo
+![Head-Tracked View Assist Depth Perspective Demo](assets/depthperspective.gif)
 
-### UI
-![Head-Tracked View Assist Screenshot](assets/buttons.png)
+### Tracker Demo
+![Head-Tracked View Assist Tracker Demo](assets/viewassistgif.gif)
+
+### Blender Add-On UI
+![Head-Tracked View Assist Add-On UI](assets/buttons.png)
 
 It combines:
 - a Blender add-on (UI + viewport control), and
@@ -28,7 +33,7 @@ It combines:
 
 ## Requirements
 - Blender 4.x (Windows)
-- Windows 10/11
+- Windows / Linux/ macOS
 - Webcam
 
 ## Download / Install
@@ -37,6 +42,29 @@ It combines:
 3. Select the downloaded ZIP.
 4. Enable the add-on.
 5. Open the 3D View sidebar (**N**) → **View Assist** tab.
+
+# Depth Perspective Demo Scene
+
+A **Depth Perspective demo `.blend` scene** is included in the **Releases page**.
+
+This scene demonstrates how head tracking can create a **depth illusion effect** within Blender.
+
+The demo scene includes:
+- a grid room environment
+- a centered object for reference
+- shader-based grid walls that enhance the depth effect
+
+**Note**
+
+Because screen sizes and aspect ratios vary between systems, the demo scene may require **manual adjustment**.
+
+You can customize the scene by:
+
+- Adjusting the **grid spacing in the Shader Editor**
+- Scaling the room geometry
+- Importing your **own models into the scene**
+
+This allows you to experiment with the depth effect using your own assets.
 
 ## Usage
 1. Click **Launch Tracker** (allow webcam access if prompted).
@@ -111,14 +139,6 @@ No external network access is required.
 - Cycle until the correct webcam feed appears
 - The selected camera is saved for future launches
 
-
-## ⚠ Known Issues (v0.1.4)
-
-• Linux: Tracker window may appear black, but tracking functions normally.
-
-• macOS (Intel & Apple Silicon): Tracker does not auto-launch from Blender menu.  Workaround: Manually run the tracker executable inside the add-on folder using terminal.
-
-Fixes are planned for v0.1.5.
 
 
 ## License
