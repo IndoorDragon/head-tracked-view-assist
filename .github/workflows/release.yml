@@ -118,10 +118,12 @@ jobs:
           fi
           cp -f "tracker/face_landmarker.task" "$RES_DIR/face_landmarker.task"
 
-          # Optional fallback test video for debugging
-          if [ -f "tracker/test.mp4" ]; then
-            cp -f "tracker/test.mp4" "$RES_DIR/test.mp4"
+          # Required fallback video inside the app bundle
+          if [ ! -f "tracker/test.mp4" ]; then
+            echo "ERROR: Missing tracker/test.mp4 in repo"
+            exit 1
           fi
+          cp -f "tracker/test.mp4" "$RES_DIR/test.mp4"
 
           echo "Bundled app resources:"
           ls -la "$RES_DIR"
@@ -239,7 +241,6 @@ jobs:
         shell: bash
         run: |
           python - << 'PY'
-          import os
           import shutil
           import platform
           from pathlib import Path
@@ -307,15 +308,18 @@ jobs:
                   else:
                       shutil.copy2(item, dst)
 
-          # 3) Include model file next to runtime for non-macOS builds only.
-          # macOS build already embeds it inside tracker.app/Contents/Resources.
+          # 3) Include required model + fallback video next to runtime for non-macOS builds only.
+          # macOS build already embeds them inside tracker.app/Contents/Resources.
           maybe_task = repo / "tracker" / "face_landmarker.task"
-          if maybe_task.exists() and not is_macos:
+          if not maybe_task.exists():
+              raise FileNotFoundError("Missing required file: tracker/face_landmarker.task")
+          if not is_macos:
               shutil.copy2(maybe_task, tracker_dst / maybe_task.name)
 
-          # Optional: include fallback test video next to runtime for non-macOS builds only.
           maybe_test_video = repo / "tracker" / "test.mp4"
-          if maybe_test_video.exists() and not is_macos:
+          if not maybe_test_video.exists():
+              raise FileNotFoundError("Missing required file: tracker/test.mp4")
+          if not is_macos:
               shutil.copy2(maybe_test_video, tracker_dst / maybe_test_video.name)
 
           # Helpful debug manifest
