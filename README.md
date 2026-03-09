@@ -8,6 +8,10 @@
 
 Head-Tracked View Assist is a Blender add-on that enables hands-free viewport navigation using real-time head tracking from a standard webcam.
 
+It combines:
+- Blender add-on (UI + viewport control), and
+- Bundled Tracker executable (OpenCV + MediaPipe) that sends motion data to Blender over localhost UDP.
+
 ### Depth Perspective Demo
 ![Head-Tracked View Assist Depth Perspective Demo](assets/depthperspective.gif)
 
@@ -17,9 +21,6 @@ Head-Tracked View Assist is a Blender add-on that enables hands-free viewport na
 ### Blender Add-On UI
 ![Head-Tracked View Assist Add-On UI](assets/Blender_Addon_UI.png)
 
-It combines:
-- a Blender add-on (UI + viewport control), and
-- a bundled tracker executable (OpenCV + MediaPipe) that sends motion data to Blender over localhost UDP.
 
 ## Features
 - Real-time head tracking using a webcam  
@@ -42,29 +43,6 @@ It combines:
 3. Select the downloaded ZIP.
 4. Enable the add-on.
 5. Open the 3D View sidebar (**N**) → **View Assist** tab.
-
-# Depth Perspective Demo Scene
-
-A **Depth Perspective demo `.blend` scene** is included in the **Releases page**.
-
-This scene demonstrates how head tracking can create a **depth illusion effect** within Blender.
-
-The demo scene includes:
-- a grid room environment
-- a centered object for reference
-- shader-based grid walls that enhance the depth effect
-
-**Note**
-
-Because screen sizes and aspect ratios vary between systems, the demo scene may require **manual adjustment**.
-
-You can customize the scene by:
-
-- Adjusting the **grid spacing in the Shader Editor**
-- Scaling the room geometry
-- Importing your **own models into the scene**
-
-This allows you to experiment with the depth effect using your own assets.
 
 ## Usage
 1. Click **Launch Tracker** (allow webcam access if prompted).
@@ -139,6 +117,29 @@ No external network access is required.
 - Cycle until the correct webcam feed appears
 - The selected camera is saved for future launches
 
+
+## Depth Perspective Demo Scene
+
+A **Depth Perspective demo `.blend` scene** is included in the **Releases page**.
+
+This scene demonstrates how head tracking can create a **depth illusion effect** within Blender.
+
+The demo scene includes:
+- a grid room environment
+- a centered object for reference
+- shader-based grid walls that enhance the depth effect
+
+**Note**
+
+Because screen sizes and aspect ratios vary between systems, the demo scene may require **manual adjustment**.
+
+You can customize the scene by:
+
+- Adjusting the **grid spacing in the Shader Editor**
+- Scaling the room geometry
+- Importing your **own models into the scene**
+
+This allows you to experiment with the depth effect using your own assets.
 
 
 ## License
