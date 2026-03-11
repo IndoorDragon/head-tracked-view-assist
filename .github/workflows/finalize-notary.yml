@@ -176,7 +176,7 @@ jobs:
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ZIP" --clobber
           ls -la "$ZIP"
 
-      - name: Unzip (ditto), inspect tracker.app, staple, verify
+      - name: Unzip (ditto), inspect tracker.app.zip source, extract app, staple, verify
         shell: bash
         run: |
           set -euo pipefail
@@ -189,9 +189,22 @@ jobs:
 
           ditto -x -k "$ZIP" workdir
 
+          APP_ZIP_PATH="workdir/head_tracked_view_assist/tracker/tracker.app.zip"
+          if [ ! -f "$APP_ZIP_PATH" ]; then
+            echo "ERROR: tracker.app.zip not found at: $APP_ZIP_PATH"
+            find workdir -maxdepth 6 -print
+            exit 1
+          fi
+
+          echo "Addon tracker contents before extraction:"
+          ls -la "workdir/head_tracked_view_assist/tracker" || true
+
+          echo "Extracting tracker.app.zip for stapling verification..."
+          ditto -x -k "$APP_ZIP_PATH" "workdir/head_tracked_view_assist/tracker"
+
           APP_PATH="workdir/head_tracked_view_assist/tracker/tracker.app"
           if [ ! -d "$APP_PATH" ]; then
-            echo "ERROR: tracker.app not found at: $APP_PATH"
+            echo "ERROR: tracker.app not found after extraction at: $APP_PATH"
             find workdir -maxdepth 6 -print
             exit 1
           fi
@@ -225,6 +238,16 @@ jobs:
 
           echo "Entitlements on app after stapling:"
           codesign -d --entitlements :- "$APP_PATH" || true
+
+          echo "Rebuilding tracker.app.zip from stapled tracker.app..."
+          rm -f "$APP_ZIP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$APP_ZIP_PATH"
+
+          echo "Removing extracted tracker.app so the addon ships only tracker.app.zip"
+          rm -rf "$APP_PATH"
+
+          echo "Final addon tracker contents:"
+          ls -la "workdir/head_tracked_view_assist/tracker" || true
 
       - name: Re-zip (ditto) and re-upload to the Release (overwrite)
         shell: bash
