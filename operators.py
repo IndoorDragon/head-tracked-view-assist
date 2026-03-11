@@ -120,11 +120,120 @@ def _is_tracker_running() -> bool:
     return _port_in_use_udp(HTVA_CTRL_PORT)
 
 
+# =========================================================
+# macOS tracker.app.zip extraction support
+# =========================================================
+
+def _macos_app_bundle_path() -> Path:
+    return _tracker_dir() / "tracker.app"
+
+
+def _macos_app_zip_path() -> Path:
+    return _tracker_dir() / "tracker.app.zip"
+
+
+def _macos_app_executable_path() -> Path:
+    return _macos_app_bundle_path() / "Contents" / "MacOS" / "tracker"
+
+
+def _remove_quarantine_recursively(path: Path) -> None:
+    """
+    Helpful on macOS if the addon zip or nested files inherit quarantine.
+    Safe to ignore errors.
+    """
+    if not _is_macos():
+        return
+    try:
+        subprocess.run(
+            ["xattr", "-dr", "com.apple.quarantine", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception:
+        pass
+
+
+def _extract_macos_tracker_app(report_fn=None) -> bool:
+    """
+    Extract tracker.app.zip into tracker/ using ditto so the .app bundle
+    structure/signature stays intact.
+    """
+    tracker_dir = _tracker_dir()
+    app_zip = _macos_app_zip_path()
+    app_bundle = _macos_app_bundle_path()
+    app_exec = _macos_app_executable_path()
+
+    if app_exec.exists():
+        return True
+
+    if not app_zip.exists():
+        if report_fn:
+            report_fn(
+                {'ERROR'},
+                "macOS tracker package not found.\n\n"
+                f"Expected:\n{app_zip}"
+            )
+        return False
+
+    try:
+        if app_bundle.exists():
+            import shutil
+            shutil.rmtree(app_bundle, ignore_errors=True)
+
+        tracker_dir.mkdir(parents=True, exist_ok=True)
+
+        result = subprocess.run(
+            ["ditto", "-x", "-k", str(app_zip), str(tracker_dir)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            if report_fn:
+                msg = result.stderr.strip() or result.stdout.strip() or "Unknown extraction error."
+                report_fn({'ERROR'}, f"Failed to extract tracker.app.zip:\n{msg}")
+            return False
+
+        if not app_exec.exists():
+            if report_fn:
+                report_fn(
+                    {'ERROR'},
+                    "tracker.app.zip extracted, but tracker executable was not found.\n\n"
+                    f"Expected:\n{app_exec}"
+                )
+            return False
+
+        _remove_quarantine_recursively(app_bundle)
+        ensure_executable(app_exec)
+
+        if report_fn:
+            report_fn({'INFO'}, "Extracted macOS tracker.app.")
+
+        return True
+
+    except Exception as e:
+        if report_fn:
+            report_fn({'ERROR'}, f"Failed to prepare macOS tracker.app: {e}")
+        return False
+
+
+def _ensure_tracker_ready(report_fn=None) -> bool:
+    """
+    Prepare the tracker for launch if needed.
+    On macOS, this extracts tracker.app from tracker.app.zip on first run.
+    """
+    if _is_macos():
+        return _extract_macos_tracker_app(report_fn=report_fn)
+    return True
+
+
 def _tracker_exec_candidates() -> list[Path]:
     """
     Return candidate executable paths in preferred order for the current OS.
 
-    Expected packaging (recommended):
+    Expected packaging:
 
     Windows:
       tracker/tracker.exe
@@ -135,9 +244,8 @@ def _tracker_exec_candidates() -> list[Path]:
       tracker/_internal/...
 
     macOS:
-      tracker/tracker.app/Contents/MacOS/tracker   (preferred)
-      tracker/tracker                              (fallback, if you distribute a plain binary)
-      tracker/_internal/... (if using one-folder layout)
+      tracker/tracker.app/Contents/MacOS/tracker
+      tracker/tracker
     """
     td = _tracker_dir()
 
@@ -150,7 +258,6 @@ def _tracker_exec_candidates() -> list[Path]:
             td / "tracker",
         ]
 
-    # Linux and other POSIX
     return [td / "tracker"]
 
 
@@ -158,14 +265,13 @@ def _resolve_tracker_executable() -> Path:
     for p in _tracker_exec_candidates():
         if p.exists():
             return p
-    # Return the first candidate for better error messages.
     cands = _tracker_exec_candidates()
     return cands[0] if cands else (_tracker_dir() / "tracker")
 
 
 def ensure_executable(exe_path: Path) -> None:
     """
-    ✅ Linux/macOS UX fix:
+    Linux/macOS UX fix:
     ZIP extraction can drop executable permissions on POSIX.
     Before launching, ensure the tracker file is executable.
     """
@@ -175,10 +281,8 @@ def ensure_executable(exe_path: Path) -> None:
         if not exe_path.exists():
             return
         st_mode = exe_path.stat().st_mode
-        # Add +x for user/group/other
         exe_path.chmod(st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
     except Exception:
-        # If this fails, launch will error and Blender will report it.
         pass
 
 
@@ -211,8 +315,7 @@ def _process_comm_for_pid_posix(pid: int) -> str:
             capture_output=True,
             text=True,
         )
-        comm = (r.stdout or "").strip()
-        return comm
+        return (r.stdout or "").strip()
     except Exception:
         return ""
 
@@ -220,9 +323,6 @@ def _process_comm_for_pid_posix(pid: int) -> str:
 def _pid_looks_like_tracker(pid: int) -> bool:
     """
     Defensive check to avoid killing an unrelated process due to stale PID file.
-    We accept:
-      - Windows: exact "tracker.exe"
-      - macOS/Linux: basename contains "tracker" (comm often returns full path or basename)
     """
     if pid <= 0:
         return False
@@ -259,7 +359,6 @@ def _kill_pid_posix(pid: int) -> bool:
     except Exception:
         return False
 
-    # grace
     for _ in range(10):
         time.sleep(0.05)
         try:
@@ -270,7 +369,6 @@ def _kill_pid_posix(pid: int) -> bool:
         if not still_alive:
             return True
 
-    # force
     try:
         os.kill(pid, signal.SIGKILL)
         return True
@@ -288,39 +386,88 @@ def _force_kill_pid_if_tracker(pid: int) -> bool:
 
     if _is_windows():
         return _kill_pid_windows(pid)
-    else:
-        return _kill_pid_posix(pid)
+    return _kill_pid_posix(pid)
 
 
 def htva_stop_tracker_on_exit():
     """
     Called during Blender shutdown via atexit (registered in __init__.py).
-    Keep this VERY defensive: Blender data may already be partially freed.
-    Do NOT use bpy.context here.
+    Keep this very defensive: Blender data may already be partially freed.
     """
     try:
         if not _is_tracker_running():
             _clear_tracker_pid()
             return
 
-        # 1) graceful quit
         _send_tracker_quit()
 
-        # 2) short grace period
         try:
             time.sleep(0.25)
         except Exception:
             pass
 
-        # 3) force kill only if PID still matches tracker
         pid = _read_tracker_pid()
         if pid > 0 and _is_tracker_running():
             _force_kill_pid_if_tracker(pid)
 
         _clear_tracker_pid()
     except Exception:
-        # Never raise during interpreter shutdown
         pass
+
+
+def _launch_tracker_macos(show_preview: bool, report_fn=None) -> bool:
+    """
+    Launch macOS tracker as an actual .app bundle so macOS attributes
+    permissions (camera, etc.) to tracker.app instead of Blender.
+
+    We pass args via `open ... --args` for future-proofing / tracker-side parsing.
+    """
+    tracker_dir = _tracker_dir()
+    app_bundle = _macos_app_bundle_path()
+
+    if not app_bundle.exists():
+        if report_fn:
+            report_fn(
+                {'ERROR'},
+                "macOS tracker.app not found.\n\n"
+                f"Expected:\n{app_bundle}"
+            )
+        return False
+
+    try:
+        # Best effort: remove quarantine from extracted bundle
+        _remove_quarantine_recursively(app_bundle)
+
+        cmd = [
+            "open",
+            "-n",
+            str(app_bundle),
+            "--args",
+            "--show-preview", "1" if show_preview else "0",
+            "--udp-ip", "127.0.0.1",
+            "--udp-port", str(HTVA_POSE_PORT),
+            "--ctrl-port", str(HTVA_CTRL_PORT),
+        ]
+
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(tracker_dir),
+            start_new_session=True,
+        )
+
+        # This PID is for the `open` helper, not the final app process.
+        # We keep writing it for compatibility, but actual tracker shutdown
+        # should primarily happen through the UDP QUIT control message.
+        _write_tracker_pid(proc.pid)
+
+        if report_fn:
+            report_fn({'INFO'}, "Launching tracker (macOS app bundle)…")
+        return True
+
+    except Exception as e:
+        if report_fn:
+            report_fn({'ERROR'}, f"Failed to launch macOS tracker.app: {e}")
+        return False
 
 
 def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
@@ -336,20 +483,24 @@ def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
         return False
 
     tracker_dir = _tracker_dir()
-    exe = _resolve_tracker_executable()
-    internal_dir = _tracker_internal_dir()
 
     if not tracker_dir.exists():
         if report_fn:
             report_fn({'ERROR'}, f"Tracker folder not found:\n{tracker_dir}")
         return False
 
+    if not _ensure_tracker_ready(report_fn=report_fn):
+        return False
+
+    # macOS: launch the .app bundle, not the inner executable
+    if _is_macos():
+        return _launch_tracker_macos(show_preview=show_preview, report_fn=report_fn)
+
+    exe = _resolve_tracker_executable()
+
     if not exe.exists():
-        # Give OS-specific guidance
         if _is_windows():
             expected = tracker_dir / "tracker.exe"
-        elif _is_macos():
-            expected = tracker_dir / "tracker.app" / "Contents" / "MacOS" / "tracker"
         else:
             expected = tracker_dir / "tracker"
 
@@ -362,19 +513,11 @@ def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
             )
         return False
 
-    # If you package as PyInstaller one-folder, _internal is typically required.
-    # If you package differently (one-file, or .app bundle on mac), _internal may not exist.
-    if (tracker_dir / "_internal").exists() is False:
-        # Don't hard-fail on mac .app or one-file builds, but warn for your current workflow.
-        pass
-
     try:
         env = dict(os.environ)
         env["HTVA_UDP_IP"] = env.get("HTVA_UDP_IP", "127.0.0.1")
         env["HTVA_UDP_PORT"] = env.get("HTVA_UDP_PORT", str(HTVA_POSE_PORT))
         env["HTVA_CTRL_PORT"] = env.get("HTVA_CTRL_PORT", str(HTVA_CTRL_PORT))
-
-        # 1 = windowed preview, 0 = background
         env["HTVA_SHOW_PREVIEW"] = "1" if show_preview else "0"
 
         popen_kwargs = {
@@ -382,20 +525,15 @@ def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
             "env": env,
         }
 
-        # Background behavior:
-        # - Windows: CREATE_NO_WINDOW suppresses console window (if applicable)
-        # - POSIX: start_new_session allows more reliable termination (separate process group)
         if _is_windows():
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
         else:
             popen_kwargs["start_new_session"] = True
 
-        # ✅ NEW: on Linux/macOS, ensure the tracker is executable (no user chmod needed)
         ensure_executable(exe)
 
         proc = subprocess.Popen([str(exe)], **popen_kwargs)
 
-        # Persist PID for safe fallback kill
         _write_tracker_pid(proc.pid)
 
         if report_fn:
@@ -442,13 +580,9 @@ class HTVA_OT_stop_tracker(bpy.types.Operator):
             self.report({'INFO'}, "Tracker is not running.")
             return {'CANCELLED'}
 
-        # 1) Try graceful quit
         _send_tracker_quit()
-
-        # Give it a moment to exit cleanly
         time.sleep(0.25)
 
-        # 2) If it’s still running, fallback kill (ONLY if PID looks like tracker)
         pid = _read_tracker_pid()
         if pid > 0 and _is_tracker_running():
             killed = _force_kill_pid_if_tracker(pid)
