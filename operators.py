@@ -177,14 +177,12 @@ def _extract_macos_tracker_app(report_fn=None) -> bool:
         return False
 
     try:
-        # Remove any broken partial extraction first
         if app_bundle.exists():
             import shutil
             shutil.rmtree(app_bundle, ignore_errors=True)
 
         tracker_dir.mkdir(parents=True, exist_ok=True)
 
-        # IMPORTANT: use ditto, not Python zipfile, to preserve macOS app bundle structure
         result = subprocess.run(
             ["ditto", "-x", "-k", str(app_zip), str(tracker_dir)],
             capture_output=True,
@@ -417,6 +415,61 @@ def htva_stop_tracker_on_exit():
         pass
 
 
+def _launch_tracker_macos(show_preview: bool, report_fn=None) -> bool:
+    """
+    Launch macOS tracker as an actual .app bundle so macOS attributes
+    permissions (camera, etc.) to tracker.app instead of Blender.
+
+    We pass args via `open ... --args` for future-proofing / tracker-side parsing.
+    """
+    tracker_dir = _tracker_dir()
+    app_bundle = _macos_app_bundle_path()
+
+    if not app_bundle.exists():
+        if report_fn:
+            report_fn(
+                {'ERROR'},
+                "macOS tracker.app not found.\n\n"
+                f"Expected:\n{app_bundle}"
+            )
+        return False
+
+    try:
+        # Best effort: remove quarantine from extracted bundle
+        _remove_quarantine_recursively(app_bundle)
+
+        cmd = [
+            "open",
+            "-n",
+            str(app_bundle),
+            "--args",
+            "--show-preview", "1" if show_preview else "0",
+            "--udp-ip", "127.0.0.1",
+            "--udp-port", str(HTVA_POSE_PORT),
+            "--ctrl-port", str(HTVA_CTRL_PORT),
+        ]
+
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(tracker_dir),
+            start_new_session=True,
+        )
+
+        # This PID is for the `open` helper, not the final app process.
+        # We keep writing it for compatibility, but actual tracker shutdown
+        # should primarily happen through the UDP QUIT control message.
+        _write_tracker_pid(proc.pid)
+
+        if report_fn:
+            report_fn({'INFO'}, "Launching tracker (macOS app bundle)…")
+        return True
+
+    except Exception as e:
+        if report_fn:
+            report_fn({'ERROR'}, f"Failed to launch macOS tracker.app: {e}")
+        return False
+
+
 def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
     """
     Shared launcher.
@@ -439,13 +492,15 @@ def _launch_tracker(show_preview: bool, report_fn=None) -> bool:
     if not _ensure_tracker_ready(report_fn=report_fn):
         return False
 
+    # macOS: launch the .app bundle, not the inner executable
+    if _is_macos():
+        return _launch_tracker_macos(show_preview=show_preview, report_fn=report_fn)
+
     exe = _resolve_tracker_executable()
 
     if not exe.exists():
         if _is_windows():
             expected = tracker_dir / "tracker.exe"
-        elif _is_macos():
-            expected = tracker_dir / "tracker.app" / "Contents" / "MacOS" / "tracker"
         else:
             expected = tracker_dir / "tracker"
 
