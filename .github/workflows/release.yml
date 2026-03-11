@@ -55,7 +55,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
 
-      # Install requirements EXCEPT mediapipe, then install mediapipe per-platform/version
       - name: Install deps (requirements without mediapipe)
         shell: bash
         run: |
@@ -111,14 +110,12 @@ jobs:
 
           mkdir -p "$RES_DIR"
 
-          # Required MediaPipe model inside the app bundle
           if [ ! -f "tracker/face_landmarker.task" ]; then
             echo "ERROR: Missing tracker/face_landmarker.task in repo"
             exit 1
           fi
           cp -f "tracker/face_landmarker.task" "$RES_DIR/face_landmarker.task"
 
-          # Required fallback video inside the app bundle
           if [ ! -f "tracker/test.mp4" ]; then
             echo "ERROR: Missing tracker/test.mp4 in repo"
             exit 1
@@ -127,6 +124,19 @@ jobs:
 
           echo "Bundled app resources:"
           ls -la "$RES_DIR"
+
+      - name: Debug macOS app bundle metadata
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="dist/tracker.app"
+
+          echo "Info.plist:"
+          plutil -p "$APP/Contents/Info.plist" || true
+
+          echo "Resources:"
+          ls -la "$APP/Contents/Resources" || true
 
       # ---------------- macOS SIGN + NOTARIZE (ASYNC) ----------------
 
@@ -171,13 +181,30 @@ jobs:
             exit 1
           fi
 
+          echo "Checking Info.plist camera usage string..."
+          /usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" "$APP/Contents/Info.plist" || {
+            echo "ERROR: NSCameraUsageDescription missing from Info.plist"
+            exit 1
+          }
+
+          if [ ! -f "entitlements.plist" ]; then
+            echo "ERROR: entitlements.plist not found at repo root"
+            exit 1
+          fi
+
           echo "Signing: $APP"
           codesign --force --deep --options runtime --timestamp \
+            --entitlements entitlements.plist \
             --sign "$MACOS_SIGN_IDENTITY" \
             "$APP"
 
           echo "Verifying signature..."
           codesign --verify --deep --strict --verbose=2 "$APP"
+
+          echo "Entitlements on app:"
+          codesign -d --entitlements :- "$APP" || true
+
+          echo "Gatekeeper assessment:"
           spctl --assess --type execute --verbose=4 "$APP" || true
         env:
           MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
@@ -260,7 +287,6 @@ jobs:
           addon_root = stage / addon_root_name
           addon_root.mkdir(parents=True, exist_ok=True)
 
-          # 1) Copy add-on .py files
           addon_py = ["__init__.py", "operators.py", "prefs.py", "props.py", "ui.py", "utils.py"]
           for fn in addon_py:
               src = repo / fn
@@ -268,7 +294,6 @@ jobs:
                   raise FileNotFoundError(f"Missing required add-on file: {fn}")
               shutil.copy2(src, addon_root / fn)
 
-          # 2) Create addon_root/tracker/ and copy tracker runtime
           dist = repo / "dist"
           if not dist.exists():
               raise FileNotFoundError("dist/ not found. PyInstaller likely failed.")
@@ -308,8 +333,6 @@ jobs:
                   else:
                       shutil.copy2(item, dst)
 
-          # 3) Include required model + fallback video next to runtime for non-macOS builds only.
-          # macOS build already embeds them inside tracker.app/Contents/Resources.
           maybe_task = repo / "tracker" / "face_landmarker.task"
           if not maybe_task.exists():
               raise FileNotFoundError("Missing required file: tracker/face_landmarker.task")
@@ -322,7 +345,6 @@ jobs:
           if not is_macos:
               shutil.copy2(maybe_test_video, tracker_dst / maybe_test_video.name)
 
-          # Helpful debug manifest
           manifest = repo / "release_out" / "zip_manifest.txt"
           with manifest.open("w", encoding="utf-8") as f:
               for p in sorted(stage.rglob("*")):
@@ -344,7 +366,6 @@ jobs:
 
           rm -f "release_out/$ZIP"
 
-          # IMPORTANT: ditto preserves symlinks/resource forks in .app bundles
           ditto -c -k --sequesterRsrc --keepParent \
             "release_stage/head_tracked_view_assist" \
             "release_out/$ZIP"
