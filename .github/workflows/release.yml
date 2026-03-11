@@ -270,6 +270,7 @@ jobs:
           python - << 'PY'
           import shutil
           import platform
+          import subprocess
           from pathlib import Path
 
           addon_root_name = "head_tracked_view_assist"
@@ -306,11 +307,23 @@ jobs:
           dist_onefile_win = dist / "tracker.exe"
           dist_onefile_unix = dist / "tracker"
 
-          if dist_app.exists() and dist_app.is_dir():
-              dst = tracker_dst / "tracker.app"
-              if dst.exists():
-                  shutil.rmtree(dst)
-              shutil.copytree(dist_app, dst, symlinks=True)
+          if is_macos and dist_app.exists() and dist_app.is_dir():
+              app_zip = tracker_dst / "tracker.app.zip"
+              if app_zip.exists():
+                  app_zip.unlink()
+
+              subprocess.run(
+                  [
+                      "ditto",
+                      "-c",
+                      "-k",
+                      "--sequesterRsrc",
+                      "--keepParent",
+                      str(dist_app),
+                      str(app_zip),
+                  ],
+                  check=True,
+              )
           elif dist_onedir.exists() and dist_onedir.is_dir():
               for item in dist_onedir.iterdir():
                   dst = tracker_dst / item.name
@@ -353,9 +366,9 @@ jobs:
           print("Staged:", stage)
           PY
 
-      # ---------------- ZIP (macOS uses ditto) ----------------
+      # ---------------- ZIP ----------------
 
-      - name: Zip add-on (macOS, preserve .app bundle)
+      - name: Zip add-on (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
