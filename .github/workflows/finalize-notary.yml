@@ -123,14 +123,14 @@ jobs:
             export OUT
             NOTARY_STATUS="$(python3 - <<'PY'
           import os, json, re
-          s = os.environ.get("OUT","")
+          s = os.environ.get("OUT", "")
           m = re.search(r'\{.*\}', s, flags=re.DOTALL)
           if not m:
               print("")
           else:
               try:
                   j = json.loads(m.group(0))
-                  print(j.get("status",""))
+                  print(j.get("status", ""))
               except Exception:
                   print("")
           PY
@@ -176,7 +176,7 @@ jobs:
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ZIP" --clobber
           ls -la "$ZIP"
 
-      - name: Unzip (ditto), staple tracker.app, verify
+      - name: Unzip (ditto), inspect tracker.app, staple, verify
         shell: bash
         run: |
           set -euo pipefail
@@ -187,24 +187,44 @@ jobs:
           rm -rf workdir
           mkdir -p workdir
 
-          # IMPORTANT: preserve symlinks/resource forks inside .app bundles
           ditto -x -k "$ZIP" workdir
 
           APP_PATH="workdir/head_tracked_view_assist/tracker/tracker.app"
           if [ ! -d "$APP_PATH" ]; then
             echo "ERROR: tracker.app not found at: $APP_PATH"
-            find workdir -maxdepth 4 -print
+            find workdir -maxdepth 6 -print
             exit 1
           fi
 
+          echo "Info.plist:"
+          plutil -p "$APP_PATH/Contents/Info.plist" || true
+
+          echo "Camera usage description:"
+          /usr/libexec/PlistBuddy -c "Print :NSCameraUsageDescription" "$APP_PATH/Contents/Info.plist" || {
+            echo "ERROR: NSCameraUsageDescription missing from stapled app bundle"
+            exit 1
+          }
+
+          echo "Resources:"
+          ls -la "$APP_PATH/Contents/Resources" || true
+
+          echo "Entitlements on app before stapling:"
+          codesign -d --entitlements :- "$APP_PATH" || true
+
           echo "Stapling ticket to: $APP_PATH"
           xcrun stapler staple "$APP_PATH"
+
+          echo "Validating stapled ticket:"
+          xcrun stapler validate "$APP_PATH" || true
 
           echo "Gatekeeper assessment:"
           spctl --assess --type execute --verbose=4 "$APP_PATH" || true
 
           echo "Codesign verification:"
           codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+          echo "Entitlements on app after stapling:"
+          codesign -d --entitlements :- "$APP_PATH" || true
 
       - name: Re-zip (ditto) and re-upload to the Release (overwrite)
         shell: bash
@@ -218,7 +238,6 @@ jobs:
 
           rm -f "$ZIP"
 
-          # IMPORTANT: ditto preserves .app bundle structure better than zip
           ditto -c -k --sequesterRsrc --keepParent \
             "workdir/head_tracked_view_assist" \
             "$ZIP"
