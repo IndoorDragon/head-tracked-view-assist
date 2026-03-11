@@ -18,17 +18,20 @@ datas += mp_datas + cv2_datas + np_datas
 binaries += mp_binaries + cv2_binaries + np_binaries
 hiddenimports += mp_hiddenimports + cv2_hiddenimports + np_hiddenimports
 
-# ✅ Fix Linux runtime crash: pkg_resources/jaraco expects backports.* at runtime in some builds
+# Runtime compatibility import
 hiddenimports += [
     "backports",
     "backports.tarfile",
 ]
 
-# Bundle the model file next to the executable (NOTE: it's inside tracker/)
-datas += [("tracker/face_landmarker.task", ".")]
+# Bundle runtime resources
+datas += [
+    ("tracker/face_landmarker.task", "."),
+    ("tracker/test.mp4", "."),
+]
 
 a = Analysis(
-    ["tracker/webcam_sender.py"],  # NOTE: script is inside tracker/
+    ["tracker/webcam_sender.py"],
     pathex=[],
     binaries=binaries,
     datas=datas,
@@ -45,13 +48,9 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-# Safer defaults: avoid UPX on macOS (can complicate signing/notarization)
 UPX_OK = (sys.platform != "darwin")
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    [],
+exe_kwargs = dict(
     exclude_binaries=True,
     name="tracker",
     debug=False,
@@ -59,6 +58,17 @@ exe = EXE(
     strip=False,
     upx=UPX_OK,
     console=False,
+)
+
+# Let PyInstaller know about entitlements too on macOS
+if sys.platform == "darwin":
+    exe_kwargs["entitlements_file"] = "entitlements.plist"
+
+exe = EXE(
+    pyz,
+    a.scripts,
+    [],
+    **exe_kwargs,
 )
 
 coll = COLLECT(
@@ -71,15 +81,20 @@ coll = COLLECT(
     name="tracker",
 )
 
-# ✅ On macOS, wrap the collected output into a real .app bundle
 if sys.platform == "darwin":
     app = BUNDLE(
         coll,
         name="tracker.app",
-        icon=None,  # optionally set an .icns here
-        bundle_identifier="com.indoordragon.tracker",  # keep stable
+        icon=None,
+        bundle_identifier="com.indoordragon.tracker",
         info_plist={
-            # Camera permission prompt (important for OpenCV capture)
-            "NSCameraUsageDescription": "Used to track head pose for Blender view assist.",
+            "CFBundleName": "tracker",
+            "CFBundleDisplayName": "tracker",
+            "CFBundleIdentifier": "com.indoordragon.tracker",
+            "CFBundleShortVersionString": "0.1.6",
+            "CFBundleVersion": "0.1.6",
+            "NSCameraUsageDescription": "Head Tracked View Assist uses your camera for real-time head tracking.",
+            # Only include this if you actually use microphone input:
+            # "NSMicrophoneUsageDescription": "Head Tracked View Assist may use audio input when available.",
         },
     )
