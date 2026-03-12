@@ -1,4 +1,5 @@
-# Head-Tracked View Assist (Blender Add-on)
+# Blender Head Tracking
+### Real-time Webcam Viewport Control for Blender
 
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Blender](https://img.shields.io/badge/Blender-4.x-orange)
@@ -6,20 +7,20 @@
 ![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey)
 ![Platform](https://img.shields.io/badge/Platform-macOS-black)
 
-Head-Tracked View Assist is a Blender add-on that enables hands-free viewport navigation using real-time head tracking from a standard webcam.
+Blender Head Tracking is a Blender add-on that enables hands-free viewport navigation using real-time head tracking from a standard webcam.
 
 It combines:
 - Blender add-on (UI + viewport control), and
 - Bundled Tracker executable (OpenCV + MediaPipe) that sends motion data to Blender over localhost UDP.
 
 ### Depth Perspective Demo
-![Head-Tracked View Assist Depth Perspective Demo](assets/depthperspective.gif)
+![Blender Head Tracking Depth Perspective Demo](assets/depthperspective.gif)
 
 ### Tracker Demo
-![Head-Tracked View Assist Tracker Demo](assets/viewassistgif.gif)
+![Blender Head Tracking Tracker Demo](assets/viewassistgif.gif)
 
 ### Blender Add-On UI
-![Head-Tracked View Assist Add-On UI](assets/Blender_Addon_UI.png)
+![Blender Head Tracking Add-On UI](assets/Blender_Addon_UI.png)
 
 
 ## Features
@@ -140,6 +141,16 @@ You can customize the scene by:
 - Importing your **own models into the scene**
 
 This allows you to experiment with the depth effect using your own assets.
+
+## Disclaimer
+
+This software uses head movement to control the Blender viewport.  
+Prolonged use may cause dizziness, nausea, eye strain, headaches, or neck discomfort.
+
+If you experience any physical discomfort, **stop using the software immediately** and take a break.
+
+Users are responsible for ensuring they use the software in a safe and comfortable manner.  
+The authors of this software are not responsible for any physical discomfort or injury resulting from its use.
 
 
 ## License
