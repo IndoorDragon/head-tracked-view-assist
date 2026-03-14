@@ -142,6 +142,19 @@ You can customize the scene by:
 
 This allows you to experiment with the depth effect using your own assets.
 
+
+🖥 Viewport Fullscreen
+
+For the best immersive experience when using head-tracked navigation, you can switch the Blender viewport to fullscreen.
+
+Menu Path:
+    Window → Toggle Window Fullscreen
+
+Viewport Shortcut:
+    Ctrl + Alt + Space
+
+This maximizes the viewport and makes the head-tracked perspective effect more immersive.
+
 ## Disclaimer
 
 This software uses head movement to control the Blender viewport.  
